@@ -1,4 +1,4 @@
-import React, { useEffect, useRef, useState } from 'react';
+
 import { createRoot } from 'react-dom/client';
 import {
   Home, Upload, FileText, MessageCircle, CheckSquare, Download, Settings,
@@ -22,6 +22,12 @@ const API =
 const SERVER =
   import.meta.env.VITE_SERVER_URL ||
   'http://127.0.0.1:8000';
+
+// Public URL used for collaboration invite links.
+// This prevents localhost:5173 from being shared when the app is deployed.
+const PUBLIC_FRONTEND_URL =
+  import.meta.env.VITE_PUBLIC_FRONTEND_URL ||
+  'https://ai-smart-transcription-frontend.onrender.com';
 
 const TYPES = {
   summary: { label: 'Summary', desc: 'General overview with key insights' },
@@ -454,9 +460,14 @@ function App() {
 
   async function shareRoom() {
     if (!room) return;
-    const link = `${window.location.origin}/collab/${room}`;
-    try { await navigator.clipboard.writeText(link); setError(''); alert('Collaboration link copied to clipboard.'); }
-    catch { setError(`Share this link: ${link}`); }
+    const link = `${PUBLIC_FRONTEND_URL}/collab/${room}`;
+    try {
+      await navigator.clipboard.writeText(link);
+      setError('');
+      alert('Collaboration link copied to clipboard.');
+    } catch {
+      setError(`Share this link: ${link}`);
+    }
   }
 
   async function copyRoomId() {
@@ -675,7 +686,7 @@ function CollaborationPage({
           </div>
           <div className="shared-note-area"><h3>Room discussion</h3><div className="collab-chat">{collabMessages.length ? collabMessages.map((m,i)=><div className="collab-chat-line" key={i}><b>{m.name}</b><span>{m.message}</span></div>) : <p className="muted">Send a message to the other users in this room.</p>}</div><div className="chat-input"><input value={collabMessage} onChange={e => setCollabMessage(e.target.value)} placeholder="Message everyone..." onKeyDown={e => e.key === 'Enter' && sendCollabMessage()}/><button className="primary" onClick={sendCollabMessage}><Send size={17}/></button></div></div>
         </section>
-        <aside className="collab-side-card"><h3>Invite others</h3><p>Share this room link so another user can join directly.</p><div className="share-link-box">{window.location.origin}/collab/{room}</div><button className="primary full-button" onClick={shareRoom}><UserPlus size={17}/> Copy Invite Link</button><div className="how-it-works"><b>How it works</b><ol><li>Create a room or enter a room ID.</li><li>Share the link with your teammates.</li><li>They enter their name and join directly.</li><li>Use Join Voice for live voice communication.</li></ol></div></aside>
+        <aside className="collab-side-card"><h3>Invite others</h3><p>Share this room link so another user can join directly.</p><div className="share-link-box">{PUBLIC_FRONTEND_URL}/collab/{room}</div><button className="primary full-button" onClick={shareRoom}><UserPlus size={17}/> Copy Invite Link</button><div className="how-it-works"><b>How it works</b><ol><li>Create a room or enter a room ID.</li><li>Share the link with your teammates.</li><li>They enter their name and join directly.</li><li>Use Join Voice for live voice communication.</li></ol></div></aside>
       </div>
     </div>}
   </div>;
