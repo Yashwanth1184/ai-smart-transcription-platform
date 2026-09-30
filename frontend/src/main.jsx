@@ -8,13 +8,20 @@ import {
 } from 'lucide-react';
 import './styles.css';
 
-const BACKEND_HOST =
-  window.location.hostname === 'localhost'
-    ? '127.0.0.1'
-    : (window.location.hostname || '127.0.0.1');
-const BACKEND_PROTOCOL = window.location.protocol === 'https:' ? 'https' : 'http';
-const API = `${BACKEND_PROTOCOL}://${BACKEND_HOST}:8000/api`;
-const SERVER = `${BACKEND_PROTOCOL}://${BACKEND_HOST}:8000`;
+// Backend configuration
+// Local development:
+//   http://127.0.0.1:8000
+//
+// Production/Render:
+//   Set VITE_API_URL and VITE_SERVER_URL in Render environment variables.
+
+const API =
+  import.meta.env.VITE_API_URL ||
+  'http://127.0.0.1:8000/api';
+
+const SERVER =
+  import.meta.env.VITE_SERVER_URL ||
+  'http://127.0.0.1:8000';
 
 const TYPES = {
   summary: { label: 'Summary', desc: 'General overview with key insights' },
@@ -338,38 +345,69 @@ function App() {
   function connectCollab(roomId, nameOverride = userName) {
     const normalized = roomId.trim().replace(/^#/, '').toUpperCase();
     const joiningName = (nameOverride || userName || '').trim();
+
     if (!normalized || !joiningName) return;
-    peers.current && Object.keys(peers.current).forEach(closePeer);
+
+    Object.keys(peers.current).forEach(closePeer);
     ws.current?.close();
+
     setRoom(normalized);
     setRoomInput(normalized);
     setPage('collab');
     setCollabStatus('connecting');
     setCollabMessages([]);
-    const wsProtocol = window.location.protocol === 'https:' ? 'wss' : 'ws';
-    const wsHost = BACKEND_HOST;
-    const socket = new WebSocket(`${wsProtocol}://${wsHost}:8000/api/collaboration/${encodeURIComponent(normalized)}`);
+
+    const wsBase = SERVER
+      .replace(/^http:/, 'ws:')
+      .replace(/^https:/, 'wss:');
+
+    const socket = new WebSocket(
+      `${wsBase}/api/collaboration/${encodeURIComponent(normalized)}`
+    );
+
     ws.current = socket;
+
     socket.onopen = () => {
-      setCollab(true); setCollabStatus('online');
-      socket.send(JSON.stringify({ type: 'join', user_id: participantId.current, user_name: joiningName }));
+      setCollab(true);
+      setCollabStatus('online');
+
+      socket.send(JSON.stringify({
+        type: 'join',
+        user_id: participantId.current,
+        user_name: joiningName
+      }));
     };
+
     socket.onmessage = async event => {
       const data = JSON.parse(event.data);
+
       if (data.type === 'room_state') {
         const users = data.users || [];
         setRoomUsers(users);
-        const remoteVoiceIds = new Set(users.filter(u => u.voice_enabled && u.user_id !== participantId.current).map(u => u.user_id));
+
+        const remoteVoiceIds = new Set(
+          users
+            .filter(
+              u =>
+                u.voice_enabled &&
+                u.user_id !== participantId.current
+            )
+            .map(u => u.user_id)
+        );
+
         for (const peerId of Object.keys(peers.current)) {
-          if (!remoteVoiceIds.has(peerId) || !localStream.current) closePeer(peerId);
+          if (!remoteVoiceIds.has(peerId) || !localStream.current) {
+            closePeer(peerId);
+          }
         }
-        // Only users who have joined voice are connected. The smaller participant
-        // id becomes the offerer so two peers do not create competing offers.
-        // localStream.current is used instead of React state here so this WebSocket
-        // callback always sees the latest voice participation state.
+
         if (localStream.current) {
           for (const user of users) {
-            if (user.voice_enabled && user.user_id !== participantId.current && participantId.current < user.user_id) {
+            if (
+              user.voice_enabled &&
+              user.user_id !== participantId.current &&
+              participantId.current < user.user_id
+            ) {
               await createPeer(user.user_id, true);
             }
           }
@@ -377,11 +415,28 @@ function App() {
       } else if (data.type === 'signal') {
         await handleSignal(data);
       } else if (data.type === 'room_message') {
-        setCollabMessages(prev => [...prev.slice(-49), { name: data.user_name || 'User', message: data.message }]);
+        setCollabMessages(prev => [
+          ...prev.slice(-49),
+          {
+            name: data.user_name || 'User',
+            message: data.message
+          }
+        ]);
       }
     };
-    socket.onclose = () => { setCollab(false); setCollabStatus('offline'); setRoomUsers([]); };
-    socket.onerror = () => { setCollabStatus('error'); setError('Could not connect to the collaboration server. Make sure FastAPI is running.'); };
+
+    socket.onclose = () => {
+      setCollab(false);
+      setCollabStatus('offline');
+      setRoomUsers([]);
+    };
+
+    socket.onerror = () => {
+      setCollabStatus('error');
+      setError(
+        'Could not connect to the collaboration server. Check the backend URL and make sure FastAPI is running.'
+      );
+    };
   }
 
   async function createRoom() {
