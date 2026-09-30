@@ -1,0 +1,8 @@
+backend/.env
+backend/credentials.json
+backend/storage/
+backend/venv/
+frontend/node_modules/
+*.pyc
+__pycache__/
+venv/
