@@ -1,4 +1,4 @@
-import { createRoot } from 'react-dom/client';
+import { createRoot, useEffect, useRef, useState } from 'react';
 import {
   Home, Upload, FileText, MessageCircle, CheckSquare, Download, Settings,
   Mic, Play, Loader2, Send, Calendar, Image as ImageIcon, Users,
