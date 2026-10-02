@@ -16,19 +16,9 @@ import './styles.css';
 // Production/Vercel frontend + Render backend:
 //   Set VITE_API_URL and VITE_SERVER_URL in Vercel environment variables.
 
-const API =
-  import.meta.env.VITE_API_URL ||
-  'http://127.0.0.1:8000/api';
-
-const SERVER =
-  import.meta.env.VITE_SERVER_URL ||
-  'http://127.0.0.1:8000';
-
-// Public URL used for collaboration invite links.
-// This prevents localhost:5173 from being shared when the app is deployed.
-const PUBLIC_FRONTEND_URL =
-  import.meta.env.VITE_PUBLIC_FRONTEND_URL ||
-  window.location.origin;
+const API = 'https://ai-smart-transcription-platform.onrender.com/api';
+const SERVER = 'https://ai-smart-transcription-platform.onrender.com';
+const PUBLIC_FRONTEND_URL = 'https://ai-smart-transcription-platform.vercel.app';
 
 const TYPES = {
   summary: { label: 'Summary', desc: 'General overview with key insights' },
@@ -103,7 +93,7 @@ function App() {
     try {
       response = await fetch(API + path, opt);
     } catch (e) {
-      throw new Error('Cannot connect to backend. Make sure FastAPI is running on http://127.0.0.1:8000.');
+      throw new Error('Cannot connect to the production backend. Please check the Render backend server.');
     }
     const data = await response.json().catch(() => ({}));
     if (!response.ok) throw new Error(data.detail || `Request failed (${response.status})`);
@@ -449,7 +439,7 @@ function App() {
   async function createRoom() {
     try {
       const d = await api('/collaboration/rooms', { method: 'POST' });
-      connectCollab(d.room_id);
+      connectCollab(d.room_id, userName);
     } catch (e) { setError(e.message); }
   }
 
