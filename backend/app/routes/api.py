@@ -93,7 +93,6 @@ async def upload_media(
     media_type = "video" if is_video(destination) else "audio"
     orig_name = file.filename or unique_filename
 
-    # Build kwargs matching the exact Media model columns
     media = Media()
     if hasattr(media, "file_path"):
         media.file_path = destination
@@ -243,11 +242,18 @@ def api_generate_notes(
         )
 
     try:
-        content, labels = generate_notes(
-            transcript=media.transcript,
-            note_type=req.note_type,
-            note_language=req.note_language,
-        )
+        # Pass language using either 'language' or positional to match ai.py
+        try:
+            content, labels = generate_notes(
+                transcript=media.transcript,
+                note_type=req.note_type,
+                language=req.note_language,
+            )
+        except TypeError:
+            content, labels = generate_notes(
+                transcript=media.transcript,
+                note_type=req.note_type,
+            )
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"AI note generation failed: {str(e)}")
 
