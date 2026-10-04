@@ -13,6 +13,7 @@ from fastapi import (
     WebSocket,
     WebSocketDisconnect,
 )
+from fastapi.responses import FileResponse, Response
 from pydantic import BaseModel
 from sqlalchemy.orm import Session
 
@@ -26,7 +27,7 @@ from app.services.ai import (
     analyze_frame,
     translate_notes,
 )
-from app.services.exporter import export_note
+from app.services import exporter
 from app.services.media import extract_audio, extract_frames, is_video
 from app.services.transcription import transcribe
 
@@ -409,7 +410,7 @@ def calendar_auth():
 
 
 # ============================================================================
-# Exports
+# Exports (Format-safe dispatcher)
 # ============================================================================
 
 @router.get("/export/{note_id}/{format}")
@@ -422,12 +423,37 @@ def api_export_note(
     if not note:
         raise HTTPException(status_code=404, detail="Note not found.")
 
-    fmt = format.lower()
+    fmt = format.lower().strip()
     if fmt not in ("pdf", "docx", "txt", "json"):
         raise HTTPException(status_code=400, detail="Unsupported export format.")
 
     try:
-        return export_note(note, fmt, output_dir=settings.output_dir)
+        # Check if exporter provides a generic or format-specific function
+        res = None
+        if hasattr(exporter, "export_note"):
+            res = exporter.export_note(note, fmt, output_dir=settings.output_dir)
+        elif hasattr(exporter, f"export_{fmt}"):
+            fn = getattr(exporter, f"export_{fmt}")
+            try:
+                res = fn(note, settings.output_dir)
+            except TypeError:
+                res = fn(note)
+        elif fmt == "json":
+            filename = f"note_{note.id}.json"
+            filepath = os.path.join(settings.output_dir, filename)
+            with open(filepath, "w", encoding="utf-8") as f:
+                f.write(note.content_json or "{}")
+            return FileResponse(filepath, media_type="application/json", filename=filename)
+        else:
+            raise HTTPException(status_code=400, detail=f"No exporter found for {fmt}")
+
+        if isinstance(res, (FileResponse, Response)):
+            return res
+        elif isinstance(res, (str, Path)) and os.path.exists(str(res)):
+            return FileResponse(str(res), filename=os.path.basename(str(res)))
+        return res
+    except HTTPException:
+        raise
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"Export failed: {str(e)}")
 
