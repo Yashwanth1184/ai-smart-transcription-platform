@@ -21,7 +21,7 @@ from app.db.database import get_db
 from app.models.models import Media, Note, Task, Reminder
 from app.services.ai import (
     generate_notes,
-    chat_with_notes,
+    chat_with_note,
     extract_tasks,
     analyze_frame,
     translate_note_content,
@@ -68,9 +68,6 @@ async def upload_media(
     file: UploadFile = File(...),
     db: Session = Depends(get_db),
 ):
-    """
-    Saves the incoming audio/video file and creates a DB record.
-    """
     ext = Path(file.filename or "").suffix.lower()
     unique_filename = f"{uuid.uuid4().hex}{ext}"
     destination = os.path.join(settings.upload_dir, unique_filename)
@@ -104,9 +101,6 @@ def transcribe_media(
     language: Optional[str] = None,
     db: Session = Depends(get_db),
 ):
-    """
-    Extracts audio if it's a video file, runs speech-to-text, and stores the transcript.
-    """
     media = db.query(Media).filter(Media.id == media_id).first()
     if not media:
         raise HTTPException(status_code=404, detail="Media not found.")
@@ -144,10 +138,6 @@ def extract_media_frames(
     media_id: int,
     db: Session = Depends(get_db),
 ):
-    """
-    Samples candidate frames from the video, resizes them, and calls Gemini Vision
-    on a capped maximum of 6 frames to keep memory and execution time minimal.
-    """
     media = db.query(Media).filter(Media.id == media_id).first()
     if not media:
         raise HTTPException(status_code=404, detail="Media not found.")
@@ -162,7 +152,6 @@ def extract_media_frames(
     os.makedirs(out_dir, exist_ok=True)
 
     try:
-        # Keep max_frames small (<= 8) to avoid Render 512 MB memory exhaustion
         raw_frames = extract_frames(
             media.file_path,
             out_dir=out_dir,
@@ -176,13 +165,11 @@ def extract_media_frames(
         )
 
     results = []
-    # Cap to a safe maximum of 6 frames for Gemini vision analysis
     for item in raw_frames[:6]:
         frame_path = item.get("path")
         rel_url = f"/storage/outputs/frames_{media.id}/{os.path.basename(frame_path)}"
         timestamp = item.get("timestamp", 0.0)
 
-        # Analyze using Gemini Vision, with a graceful fallback if an API call glitches
         try:
             analysis = analyze_frame(frame_path, timestamp=timestamp)
         except Exception:
@@ -316,7 +303,7 @@ def api_chat(
 
     note_data = json.loads(note.content_json or "{}")
     try:
-        answer = chat_with_notes(note_data, req.question)
+        answer = chat_with_note(note_data, req.question)
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"Chat failed: {str(e)}")
 
@@ -430,11 +417,7 @@ def api_export_note(
 # ============================================================================
 
 class CollaborationManager:
-    """
-    Maintains active WebSocket connections per room and relays messages/signals.
-    """
     def __init__(self):
-        # room_id -> list of {"ws": WebSocket, "user_id": str, "user_name": str, "voice_enabled": bool}
         self.rooms: Dict[str, List[dict]] = {}
 
     async def connect(self, room_id: str, websocket: WebSocket):
@@ -496,9 +479,6 @@ manager = CollaborationManager()
 
 @router.post("/collaboration/rooms")
 def create_room():
-    """
-    Generates a 6-character unique room ID.
-    """
     room_id = uuid.uuid4().hex[:6].upper()
     return {"room_id": room_id}
 
@@ -531,7 +511,6 @@ async def collaboration_ws(websocket: WebSocket, room_id: str):
                 await manager.broadcast_room_state(normalized_room)
 
             elif msg_type == "signal":
-                # Forward WebRTC offer/answer/ice candidate to specific peer
                 target = data.get("target")
                 if target:
                     await manager.send_to_user(
