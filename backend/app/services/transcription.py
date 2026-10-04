@@ -14,7 +14,7 @@ def parse_time(time_str: str) -> float:
 def transcribe(audio_path: str, language: str | None = None):
     client = genai.Client(api_key=settings.gemini_api_key)
     
-    # Upload audio file to Gemini File API
+    # 1. Upload audio file to Gemini File API
     audio_file = client.files.upload(file=audio_path)
     
     prompt = (
@@ -26,15 +26,16 @@ def transcribe(audio_path: str, language: str | None = None):
     if language and language != "auto":
         prompt += f" The speech language is {language}."
 
-    # Priority order for models to avoid hitting 429 quota limits on a single model
-    configured_model = settings.gemini_model or "gemini-1.5-flash"
+    # Priority order matching your account's available models and quotas
     candidate_models = [
-        configured_model,
-        "gemini-1.5-flash",
+        settings.gemini_model or "gemini-2.0-flash",
         "gemini-2.0-flash",
-        "gemini-1.5-pro",
+        "gemini-2.0-flash-lite",
+        "gemini-3.1-flash-lite",
+        "gemini-3.5-flash-lite",
+        "gemini-3.8-flash",
     ]
-    # Remove duplicate entries while maintaining candidate order
+    # Deduplicate while preserving order
     models_to_try = list(dict.fromkeys(candidate_models))
 
     response = None
@@ -42,17 +43,20 @@ def transcribe(audio_path: str, language: str | None = None):
 
     for model_name in models_to_try:
         try:
+            print(f"Attempting transcription using model: {model_name}")
             response = client.models.generate_content(
                 model=model_name,
                 contents=[audio_file, prompt]
             )
             if response and response.text:
+                print(f"Transcription succeeded with model: {model_name}")
                 break
         except Exception as e:
+            print(f"Model {model_name} failed: {e}. Falling back to next candidate...")
             last_error = e
             continue
 
-    # Clean up the uploaded audio file from Google servers
+    # Clean up uploaded audio from Gemini storage
     try:
         client.files.delete(name=audio_file.name)
     except Exception:
@@ -65,7 +69,7 @@ def transcribe(audio_path: str, language: str | None = None):
 
     full_text = response.text or ""
     
-    # Parse timestamp lines into structured segments
+    # Parse timestamped segments
     segments = []
     text_chunks = []
     pattern = re.compile(r"\[(\d+:\d+(?::\d+)?)\s*-\s*(\d+:\d+(?::\d+)?)\]\s*(.*)")
