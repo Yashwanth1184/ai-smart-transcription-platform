@@ -91,13 +91,22 @@ async def upload_media(
             f.write(chunk)
 
     media_type = "video" if is_video(destination) else "audio"
+    orig_name = file.filename or unique_filename
 
-    # Only assign attributes that exist in the database model
+    # Build kwargs matching the exact Media model columns
     media = Media()
     if hasattr(media, "file_path"):
         media.file_path = destination
     if hasattr(media, "media_type"):
         media.media_type = media_type
+    if hasattr(media, "original_name"):
+        media.original_name = orig_name
+    if hasattr(media, "filename"):
+        media.filename = orig_name
+    if hasattr(media, "status"):
+        media.status = "uploaded"
+    if hasattr(media, "transcript"):
+        media.transcript = ""
 
     db.add(media)
     db.commit()
@@ -112,7 +121,7 @@ async def upload_media(
 
     return {
         "id": media.id,
-        "filename": file.filename or unique_filename,
+        "filename": orig_name,
         "media_type": media_type,
         "created_at": created_iso,
     }
@@ -142,6 +151,8 @@ def transcribe_media(
         )
 
     media.transcript = result.get("text", "")
+    if hasattr(media, "status"):
+        media.status = "transcribed"
     db.commit()
 
     return {
@@ -444,6 +455,8 @@ def api_export_note(
                 res = fn(note, settings.output_dir)
             except TypeError:
                 res = fn(note)
+        elif hasattr(exporter, "export_note"):
+            res = exporter.export_note(note, fmt, output_dir=settings.output_dir)
         elif fmt == "json":
             filename = f"note_{note.id}.json"
             filepath = os.path.join(settings.output_dir, filename)
