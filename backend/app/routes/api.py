@@ -24,7 +24,7 @@ from app.services.ai import (
     chat_with_note,
     extract_tasks,
     analyze_frame,
-    translate_note_content,
+    translate_note,
 )
 from app.services.calendar_service import get_calendar_auth_url
 from app.services.exporter import export_note
@@ -252,7 +252,7 @@ def api_translate_note(
     current_content = json.loads(note.content_json or "{}")
 
     try:
-        translated_content, labels = translate_note_content(
+        translated_content, labels = translate_note(
             content=current_content,
             target_language=req.target_language,
             note_type=note.note_type,
