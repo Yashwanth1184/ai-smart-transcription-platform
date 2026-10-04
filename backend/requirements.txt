@@ -9,6 +9,7 @@ httpx==0.28.1
 python-jose[cryptography]==3.3.0
 passlib[bcrypt]==1.7.4
 faster-whisper==1.2.0
+av==18.1.0
 opencv-python-headless==4.11.0.86
 numpy==2.2.3
 google-genai==1.7.0
