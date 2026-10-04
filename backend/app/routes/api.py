@@ -92,20 +92,25 @@ async def upload_media(
 
     media_type = "video" if is_video(destination) else "audio"
 
-    media = Media(
-        filename=file.filename or unique_filename,
-        file_path=destination,
-        media_type=media_type,
-    )
+    # Only pass columns that exist on the Media model
+    media_kwargs = {
+        "file_path": destination,
+        "media_type": media_type,
+    }
+    for col in ["filename", "file_name", "name"]:
+        if hasattr(Media, col):
+            media_kwargs[col] = file.filename or unique_filename
+
+    media = Media(**media_kwargs)
     db.add(media)
     db.commit()
     db.refresh(media)
 
     return {
         "id": media.id,
-        "filename": media.filename,
+        "filename": getattr(media, "filename", file.filename or unique_filename),
         "media_type": media.media_type,
-        "created_at": media.created_at.isoformat() if media.created_at else None,
+        "created_at": media.created_at.isoformat() if getattr(media, "created_at", None) else None,
     }
 
 
@@ -410,7 +415,7 @@ def calendar_auth():
 
 
 # ============================================================================
-# Exports (Format-safe dispatcher)
+# Exports (Format-safe dispatcher using exporter module)
 # ============================================================================
 
 @router.get("/export/{note_id}/{format}")
@@ -428,16 +433,15 @@ def api_export_note(
         raise HTTPException(status_code=400, detail="Unsupported export format.")
 
     try:
-        # Check if exporter provides a generic or format-specific function
         res = None
-        if hasattr(exporter, "export_note"):
-            res = exporter.export_note(note, fmt, output_dir=settings.output_dir)
-        elif hasattr(exporter, f"export_{fmt}"):
+        if hasattr(exporter, f"export_{fmt}"):
             fn = getattr(exporter, f"export_{fmt}")
             try:
                 res = fn(note, settings.output_dir)
             except TypeError:
                 res = fn(note)
+        elif hasattr(exporter, "export_note"):
+            res = exporter.export_note(note, fmt, output_dir=settings.output_dir)
         elif fmt == "json":
             filename = f"note_{note.id}.json"
             filepath = os.path.join(settings.output_dir, filename)
