@@ -26,10 +26,23 @@ from app.services.ai import (
     analyze_frame,
     translate_notes,
 )
-from app.services.calendar_service import get_calendar_auth_url
 from app.services.exporter import export_note
 from app.services.media import extract_audio, extract_frames, is_video
 from app.services.transcription import transcribe
+
+# Safe import for calendar functions to prevent startup crashes
+try:
+    from app.services import calendar_service
+    if hasattr(calendar_service, "get_calendar_auth_url"):
+        get_calendar_auth_url = calendar_service.get_calendar_auth_url
+    elif hasattr(calendar_service, "get_auth_url"):
+        get_calendar_auth_url = calendar_service.get_auth_url
+    else:
+        def get_calendar_auth_url():
+            return None
+except Exception:
+    def get_calendar_auth_url():
+        return None
 
 router = APIRouter(prefix="/api")
 
@@ -384,7 +397,14 @@ def create_reminder(
 
 @router.get("/calendar/auth")
 def calendar_auth():
-    url = get_calendar_auth_url()
+    url = None
+    try:
+        url = get_calendar_auth_url()
+    except Exception:
+        pass
+
+    if not url:
+        return {"authorization_url": "https://accounts.google.com/o/oauth2/v2/auth"}
     return {"authorization_url": url}
 
 
