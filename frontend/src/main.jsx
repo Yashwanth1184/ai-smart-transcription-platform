@@ -78,7 +78,7 @@ function App() {
       const mediaData = await upRes.json();
       setMedia(mediaData);
 
-      setLoadingMsg("Transcribing audio content using Gemini API...");
+      setLoadingMsg("Transcribing audio content with Gemini AI...");
       const transRes = await fetch(
         `${API_BASE}/transcribe/${mediaData.id}?language=${transcriptionLang}`,
         { method: "POST" }
@@ -93,7 +93,7 @@ function App() {
       setTranscript(transData.text || "");
 
       if (mediaData.media_type === "video") {
-        setLoadingMsg("Extracting and analyzing visual frames...");
+        setLoadingMsg("Extracting video keyframes...");
         fetch(`${API_BASE}/media/extract-frames/${mediaData.id}`, { method: "POST" })
           .then((r) => r.json())
           .then((fData) => {
@@ -177,7 +177,7 @@ function App() {
   }
 
   async function handleExtractTasks() {
-    if (!media) {
+    if (!transcript.trim()) {
       setErrorMsg("Please upload and transcribe a file first.");
       return;
     }
@@ -185,7 +185,7 @@ function App() {
     setLoadingMsg("Extracting actionable tasks...");
 
     try {
-      const res = await fetch(`${API_BASE}/tasks/extract/${media.id}`, { method: "POST" });
+      const res = await fetch(`${API_BASE}/tasks/extract/${media ? media.id : 1}`, { method: "POST" });
       if (!res.ok) {
         const err = await res.json();
         throw new Error(err.detail || "Extraction failed");
@@ -231,12 +231,12 @@ function App() {
   function renderNoteDetails(content) {
     if (!content) return null;
     return (
-      <div className="note-content-display">
+      <div className="note-rendered-box">
         {Object.entries(content).map(([key, val]) => {
           const title = key.replace(/_/g, " ").toUpperCase();
           if (Array.isArray(val)) {
             return (
-              <div key={key} className="note-section">
+              <div key={key} className="note-block">
                 <h4>{title}</h4>
                 <ul>
                   {val.map((item, idx) => (
@@ -249,7 +249,7 @@ function App() {
             );
           }
           return (
-            <div key={key} className="note-section">
+            <div key={key} className="note-block">
               <h4>{title}</h4>
               <p>{typeof val === "object" ? JSON.stringify(val) : val}</p>
             </div>
@@ -260,15 +260,17 @@ function App() {
   }
 
   return (
-    <div className="app-layout">
-      <aside className="sidebar">
-        <div className="logo-section">
-          <h2>🎙 AI Smart Notes</h2>
+    <div className="app-shell">
+      {/* Sidebar Navigation */}
+      <aside className="side-nav">
+        <div className="brand">
+          <span className="brand-icon">🎙️</span>
+          <h2>AI Smart Notes</h2>
         </div>
-        <nav className="nav-menu">
+        <div className="nav-list">
           {[
             { id: "Home", icon: "🏠", label: "Home" },
-            { id: "Transcribe", icon: "⬆️", label: "Transcribe" },
+            { id: "Transcribe", icon: "⬆️️", label: "Transcribe" },
             { id: "My Notes", icon: "📑", label: "My Notes" },
             { id: "Chat with Notes", icon: "💬", label: "Chat with Notes" },
             { id: "Tasks & Reminders", icon: "☑️", label: "Tasks & Reminders" },
@@ -277,38 +279,42 @@ function App() {
           ].map((tab) => (
             <button
               key={tab.id}
-              className={`nav-item ${activeTab === tab.id ? "active" : ""}`}
+              className={`nav-btn ${activeTab === tab.id ? "active" : ""}`}
               onClick={() => setActiveTab(tab.id)}
             >
-              <span>{tab.icon}</span>
-              <span>{tab.label}</span>
+              <span className="nav-icon">{tab.icon}</span>
+              <span className="nav-label">{tab.label}</span>
             </button>
           ))}
-        </nav>
+        </div>
       </aside>
 
-      <main className="main-content">
-        <header className="main-header">
-          <h1>Transform Audio & Video into Smart Notes</h1>
+      {/* Main Layout Area */}
+      <div className="main-layout">
+        <header className="hero-section">
+          <h1>Transform Audio &amp; Video into Smart Notes</h1>
           <p>Transcribe, understand, organize and act on your content using AI.</p>
         </header>
 
+        {/* Global Notifications */}
         {errorMsg && (
-          <div className="alert-banner error">
+          <div className="banner error-banner">
             <span>{errorMsg}</span>
-            <button onClick={() => setErrorMsg("")}>×</button>
+            <button className="close-btn" onClick={() => setErrorMsg("")}>×</button>
           </div>
         )}
 
         {loadingMsg && (
-          <div className="alert-banner info">
+          <div className="banner info-banner">
             <span>⏳ {loadingMsg}</span>
           </div>
         )}
 
-        {activeTab === "Home" || activeTab === "Transcribe" ? (
-          <div className="transcription-workspace">
-            <div className="note-type-cards">
+        {/* Home & Transcribe Views */}
+        {(activeTab === "Home" || activeTab === "Transcribe") && (
+          <div className="view-content">
+            {/* Note Type Pill Selectors */}
+            <div className="type-pills-row">
               {[
                 { id: "summary", title: "Summary", desc: "General overview with key insights" },
                 { id: "meeting", title: "Meeting", desc: "Decisions, discussions and action items" },
@@ -317,145 +323,157 @@ function App() {
               ].map((card) => (
                 <div
                   key={card.id}
-                  className={`type-card ${noteType === card.id ? "active" : ""}`}
+                  className={`type-pill ${noteType === card.id ? "active" : ""}`}
                   onClick={() => setNoteType(card.id)}
                 >
-                  <div className="type-icon">📑</div>
-                  <h3>{card.title}</h3>
+                  <div className="pill-header">
+                    <span className="pill-icon">📄</span>
+                    <h4>{card.title}</h4>
+                  </div>
                   <p>{card.desc}</p>
                 </div>
               ))}
             </div>
 
-            <div className="workspace-columns">
-              <div className="panel upload-panel">
-                <div className="dropzone-box">
-                  <div className="upload-icon">⬆️</div>
+            {/* Split Grid */}
+            <div className="content-grid">
+              {/* Upload Card */}
+              <div className="glass-card upload-card">
+                <div className="dropzone-area">
+                  <span className="drop-icon">⬆️</span>
                   <h3>Upload Audio or Video</h3>
                   <p>MP3, WAV, M4A, MP4, MOV, WEBM</p>
                   <input
                     type="file"
-                    id="mediaInput"
+                    id="mediaUploadInput"
                     accept="audio/*,video/*"
                     onChange={(e) => setFile(e.target.files[0])}
                   />
-                  <label htmlFor="mediaInput" className="file-select-btn">
+                  <label htmlFor="mediaUploadInput" className="primary-action-btn">
                     {file ? file.name : "Choose File"}
                   </label>
                 </div>
 
-                <div className="form-group">
-                  <label>Transcription Language</label>
-                  <select
-                    value={transcriptionLang}
-                    onChange={(e) => setTranscriptionLang(e.target.value)}
-                  >
-                    <option value="auto">Auto detect</option>
-                    <option value="en">English</option>
-                    <option value="es">Spanish</option>
-                    <option value="fr">French</option>
-                    <option value="de">German</option>
-                    <option value="hi">Hindi</option>
-                  </select>
+                <div className="controls-row">
+                  <div className="field-group">
+                    <label>Transcription Language</label>
+                    <select
+                      value={transcriptionLang}
+                      onChange={(e) => setTranscriptionLang(e.target.value)}
+                    >
+                      <option value="auto">Auto detect</option>
+                      <option value="en">English</option>
+                      <option value="es">Spanish</option>
+                      <option value="fr">French</option>
+                      <option value="de">German</option>
+                      <option value="hi">Hindi</option>
+                    </select>
+                  </div>
+
+                  <div className="field-group">
+                    <label>Note Language</label>
+                    <select
+                      value={noteLanguage}
+                      onChange={(e) => setNoteLanguage(e.target.value)}
+                    >
+                      <option value="en">English</option>
+                      <option value="es">Spanish</option>
+                      <option value="fr">French</option>
+                      <option value="de">German</option>
+                      <option value="hi">Hindi</option>
+                    </select>
+                  </div>
                 </div>
 
-                <div className="form-group">
-                  <label>Note Language</label>
-                  <select
-                    value={noteLanguage}
-                    onChange={(e) => setNoteLanguage(e.target.value)}
-                  >
-                    <option value="en">English</option>
-                    <option value="es">Spanish</option>
-                    <option value="fr">French</option>
-                    <option value="de">German</option>
-                    <option value="hi">Hindi</option>
-                  </select>
-                </div>
-
-                <div className="button-group">
+                <div className="actions-cluster">
                   <button
-                    className={`btn-secondary ${isRecording ? "recording" : ""}`}
+                    className={`secondary-btn ${isRecording ? "recording-pulse" : ""}`}
                     onClick={isRecording ? stopRecording : startRecording}
                   >
                     {isRecording ? "⏹️ Stop Recording" : "⏺️ Record Audio"}
                   </button>
-                  <button className="btn-primary" onClick={uploadAndTranscribe}>
-                    ▶️ Upload & Transcribe
+                  <button className="primary-btn" onClick={uploadAndTranscribe}>
+                    ▶️ Upload &amp; Transcribe
                   </button>
                 </div>
               </div>
 
-              <div className="panel transcript-panel">
-                <div className="panel-header">
+              {/* Transcript Card */}
+              <div className="glass-card transcript-card">
+                <div className="card-top">
                   <h3>Transcript</h3>
-                  <span className="badge">{noteType} mode</span>
+                  <span className="mode-badge">{noteType.toUpperCase()} mode</span>
                 </div>
                 <textarea
-                  className="transcript-textarea"
+                  className="input-area"
                   value={transcript}
                   onChange={(e) => setTranscript(e.target.value)}
                   placeholder="Your transcript will appear here after transcription. You can also paste transcript text for testing."
                 />
 
-                <div className="action-footer">
-                  <button className="btn-primary" onClick={generate}>
+                <div className="footer-actions">
+                  <button className="primary-btn" onClick={generate}>
                     Generate {noteType.charAt(0).toUpperCase() + noteType.slice(1)} Notes
                   </button>
-                  <button className="btn-outline" onClick={handleExtractTasks}>
+                  <button className="outline-btn" onClick={handleExtractTasks}>
                     Extract Action Items
                   </button>
                 </div>
 
                 {frames.length > 0 && (
-                  <p className="frame-hint">
+                  <div className="meta-footer">
                     🖼️ {frames.length} visual items detected. Open Multimedia to view them.
-                  </p>
+                  </div>
                 )}
               </div>
             </div>
 
+            {/* Note Display Box */}
             {currentNote && (
-              <div className="note-display-card">
+              <div className="glass-card result-note-box">
                 <h2>{currentNote.title}</h2>
                 {renderNoteDetails(currentNote.content)}
               </div>
             )}
           </div>
-        ) : null}
+        )}
 
+        {/* My Notes View */}
         {activeTab === "My Notes" && (
-          <div className="notes-list-view">
+          <div className="view-content">
             <h2>Your Saved Notes</h2>
-            <div className="notes-grid">
+            <div className="notes-masonry">
               {allNotes.map((n) => (
                 <div
                   key={n.id}
-                  className="note-summary-card"
+                  className="glass-card note-card-preview"
                   onClick={() => {
                     setCurrentNote(n);
                     setActiveTab("Home");
                   }}
                 >
-                  <div className="badge">{n.note_type}</div>
+                  <span className="mode-badge">{n.note_type}</span>
                   <h3>{n.title}</h3>
-                  <p>{n.created_at ? new Date(n.created_at).toLocaleDateString() : ""}</p>
+                  <small>{n.created_at ? new Date(n.created_at).toLocaleDateString() : ""}</small>
                 </div>
               ))}
             </div>
           </div>
         )}
 
+        {/* Chat with Notes View */}
         {activeTab === "Chat with Notes" && (
-          <div className="chat-container">
+          <div className="view-content">
             <h2>Chat with Notes</h2>
             {!currentNote ? (
-              <p>Please generate or select a note to start asking questions.</p>
+              <div className="glass-card placeholder-card">
+                <p>Please generate or select a note from "My Notes" to start asking questions.</p>
+              </div>
             ) : (
-              <>
-                <div className="chat-log">
+              <div className="glass-card chat-card">
+                <div className="chat-thread">
                   {chatHistory.map((msg, i) => (
-                    <div key={i} className={`chat-message ${msg.sender}`}>
+                    <div key={i} className={`bubble ${msg.sender}`}>
                       <b>{msg.sender === "user" ? "You" : "AI"}:</b> {msg.text}
                     </div>
                   ))}
@@ -467,23 +485,24 @@ function App() {
                     value={chatQuestion}
                     onChange={(e) => setChatQuestion(e.target.value)}
                   />
-                  <button type="submit" className="btn-primary">Send</button>
+                  <button type="submit" className="primary-btn">Send</button>
                 </form>
-              </>
+              </div>
             )}
           </div>
         )}
 
+        {/* Tasks & Reminders View */}
         {activeTab === "Tasks & Reminders" && (
-          <div className="tasks-container">
-            <h2>Action Items & Commitments</h2>
-            <div className="task-list">
+          <div className="view-content">
+            <h2>Action Items &amp; Commitments</h2>
+            <div className="glass-card tasks-wrapper">
               {tasks.length === 0 ? (
-                <p>No extracted tasks found.</p>
+                <p>No extracted tasks found. Click "Extract Action Items" in the transcript view.</p>
               ) : (
                 tasks.map((t) => (
-                  <div key={t.id} className="task-row">
-                    <div>
+                  <div key={t.id} className="task-item">
+                    <div className="task-info">
                       <h4>{t.title}</h4>
                       <p>{t.description}</p>
                     </div>
@@ -497,19 +516,22 @@ function App() {
           </div>
         )}
 
+        {/* Multimedia Frames View */}
         {activeTab === "Multimedia" && (
-          <div className="multimedia-container">
+          <div className="view-content">
             <h2>Visual Keyframe Detections</h2>
-            <div className="frames-grid">
+            <div className="frames-masonry">
               {frames.length === 0 ? (
-                <p>No video keyframes extracted yet.</p>
+                <div className="glass-card placeholder-card">
+                  <p>No video keyframes extracted yet. Upload a video file on Home.</p>
+                </div>
               ) : (
                 frames.map((f, i) => (
-                  <div key={i} className="frame-card">
+                  <div key={i} className="glass-card frame-card">
                     <h4>{f.analysis?.title || f.filename}</h4>
                     <p>{f.analysis?.description}</p>
                     {f.analysis?.extracted_text && (
-                      <pre>{f.analysis.extracted_text}</pre>
+                      <pre className="code-snippet">{f.analysis.extracted_text}</pre>
                     )}
                   </div>
                 ))
@@ -518,29 +540,35 @@ function App() {
           </div>
         )}
 
+        {/* Export View */}
         {activeTab === "Export" && (
-          <div className="export-container">
+          <div className="view-content">
             <h2>Export Note</h2>
             {!currentNote ? (
-              <p>Please select or generate a note first.</p>
+              <div className="glass-card placeholder-card">
+                <p>Please generate or select a note first.</p>
+              </div>
             ) : (
-              <div className="export-buttons">
-                {["pdf", "docx", "txt", "json"].map((fmt) => (
-                  <a
-                    key={fmt}
-                    className="btn-primary"
-                    href={`${API_BASE}/export/${currentNote.id}/${fmt}`}
-                    target="_blank"
-                    rel="noreferrer"
-                  >
-                    Download as {fmt.toUpperCase()}
-                  </a>
-                ))}
+              <div className="glass-card export-box">
+                <p>Download <b>{currentNote.title}</b> in your preferred format:</p>
+                <div className="export-grid">
+                  {["pdf", "docx", "txt", "json"].map((fmt) => (
+                    <a
+                      key={fmt}
+                      className="primary-btn"
+                      href={`${API_BASE}/export/${currentNote.id}/${fmt}`}
+                      target="_blank"
+                      rel="noreferrer"
+                    >
+                      Download {fmt.toUpperCase()}
+                    </a>
+                  ))}
+                </div>
               </div>
             )}
           </div>
         )}
-      </main>
+      </div>
     </div>
   );
 }
