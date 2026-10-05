@@ -24,7 +24,6 @@ function App() {
   const mediaRecorderRef = useRef(null);
   const audioChunksRef = useRef([]);
 
-  // Fetch initial notes and tasks
   useEffect(() => {
     fetchNotes();
     fetchTasks();
@@ -54,7 +53,6 @@ function App() {
     }
   }
 
-  // File Upload & Transcribe
   async function uploadAndTranscribe() {
     if (!file) {
       setErrorMsg("Please select an audio or video file first.");
@@ -94,7 +92,6 @@ function App() {
       const transData = await transRes.json();
       setTranscript(transData.text || "");
 
-      // If video, extract visual frames in background
       if (mediaData.media_type === "video") {
         setLoadingMsg("Extracting and analyzing visual frames...");
         fetch(`${API_BASE}/media/extract-frames/${mediaData.id}`, { method: "POST" })
@@ -112,7 +109,6 @@ function App() {
     }
   }
 
-  // Audio Recording
   async function startRecording() {
     try {
       const stream = await navigator.mediaDevices.getUserMedia({ audio: true });
@@ -145,7 +141,6 @@ function App() {
     }
   }
 
-  // Generate Notes
   async function generate() {
     if (!transcript.trim()) {
       setErrorMsg("Valid transcript is required before generating notes.");
@@ -159,7 +154,7 @@ function App() {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({
-          media_id: media ? media.id : 1,
+          media_id: media ? media.id : null,
           note_type: noteType,
           note_language: noteLanguage,
           transcript: transcript.trim(),
@@ -181,7 +176,6 @@ function App() {
     }
   }
 
-  // Extract Tasks
   async function handleExtractTasks() {
     if (!media) {
       setErrorMsg("Please upload and transcribe a file first.");
@@ -205,7 +199,6 @@ function App() {
     }
   }
 
-  // Chat with Note
   async function handleChat(e) {
     e.preventDefault();
     if (!chatQuestion.trim() || !currentNote) return;
@@ -235,7 +228,6 @@ function App() {
     }
   }
 
-  // Render Note Content Dynamically
   function renderNoteDetails(content) {
     if (!content) return null;
     return (
@@ -269,10 +261,9 @@ function App() {
 
   return (
     <div className="app-layout">
-      {/* Sidebar Navigation */}
       <aside className="sidebar">
         <div className="logo-section">
-          <h2>🎙️️ AI Smart Notes</h2>
+          <h2>🎙 AI Smart Notes</h2>
         </div>
         <nav className="nav-menu">
           {[
@@ -296,14 +287,12 @@ function App() {
         </nav>
       </aside>
 
-      {/* Main Content Area */}
       <main className="main-content">
         <header className="main-header">
           <h1>Transform Audio & Video into Smart Notes</h1>
           <p>Transcribe, understand, organize and act on your content using AI.</p>
         </header>
 
-        {/* Global Error Banner */}
         {errorMsg && (
           <div className="alert-banner error">
             <span>{errorMsg}</span>
@@ -311,17 +300,14 @@ function App() {
           </div>
         )}
 
-        {/* Global Loading Indicator */}
         {loadingMsg && (
           <div className="alert-banner info">
             <span>⏳ {loadingMsg}</span>
           </div>
         )}
 
-        {/* Dynamic Route View */}
         {activeTab === "Home" || activeTab === "Transcribe" ? (
           <div className="transcription-workspace">
-            {/* Note Type Selector Cards */}
             <div className="note-type-cards">
               {[
                 { id: "summary", title: "Summary", desc: "General overview with key insights" },
@@ -342,7 +328,6 @@ function App() {
             </div>
 
             <div className="workspace-columns">
-              {/* Left Column: Upload and Media Setup */}
               <div className="panel upload-panel">
                 <div className="dropzone-box">
                   <div className="upload-icon">⬆️</div>
@@ -401,7 +386,6 @@ function App() {
                 </div>
               </div>
 
-              {/* Right Column: Transcript & Note Generation */}
               <div className="panel transcript-panel">
                 <div className="panel-header">
                   <h3>Transcript</h3>
@@ -431,7 +415,6 @@ function App() {
               </div>
             </div>
 
-            {/* Current Generated Note View */}
             {currentNote && (
               <div className="note-display-card">
                 <h2>{currentNote.title}</h2>
@@ -441,7 +424,6 @@ function App() {
           </div>
         ) : null}
 
-        {/* My Notes Tab */}
         {activeTab === "My Notes" && (
           <div className="notes-list-view">
             <h2>Your Saved Notes</h2>
@@ -464,7 +446,6 @@ function App() {
           </div>
         )}
 
-        {/* Chat with Notes Tab */}
         {activeTab === "Chat with Notes" && (
           <div className="chat-container">
             <h2>Chat with Notes</h2>
@@ -493,7 +474,6 @@ function App() {
           </div>
         )}
 
-        {/* Tasks & Reminders Tab */}
         {activeTab === "Tasks & Reminders" && (
           <div className="tasks-container">
             <h2>Action Items & Commitments</h2>
@@ -517,7 +497,6 @@ function App() {
           </div>
         )}
 
-        {/* Multimedia Frames Tab */}
         {activeTab === "Multimedia" && (
           <div className="multimedia-container">
             <h2>Visual Keyframe Detections</h2>
@@ -539,7 +518,6 @@ function App() {
           </div>
         )}
 
-        {/* Export Tab */}
         {activeTab === "Export" && (
           <div className="export-container">
             <h2>Export Note</h2>

@@ -94,7 +94,6 @@ async def upload_media(
     media_type = "video" if is_video(destination) else "audio"
     orig_name = file.filename or unique_filename
 
-    # Construct Media instance matching existing database model attributes
     media = Media()
     if hasattr(media, "file_path"):
         media.file_path = destination
