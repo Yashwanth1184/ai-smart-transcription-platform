@@ -1,141 +1,262 @@
 import json
+import re
+from typing import Any, Dict, List, Tuple
 from google import genai
 from google.genai import types
 from app.config import settings
 
-NOTE_SCHEMAS = {
-    "summary": ["title", "overview", "main_points", "key_insights", "important_details", "conclusion"],
-    "meeting": ["meeting_title", "agenda", "discussion_points", "decisions_made", "action_items", "important_follow_ups", "next_meeting"],
-    "lecture": ["subject", "topic", "learning_objectives", "main_concepts", "detailed_explanation", "important_definitions", "examples", "key_points", "quick_revision"],
-    "task": ["task_title", "description", "tasks", "required_actions", "deadlines", "next_steps"],
-}
-
-SUPPORTED_LANGUAGES = {
-    "en": "English", "kn": "Kannada", "hi": "Hindi", "te": "Telugu", "ta": "Tamil",
-    "ml": "Malayalam", "mr": "Marathi", "bn": "Bengali", "gu": "Gujarati", "pa": "Punjabi",
-    "or": "Odia", "as": "Assamese", "ur": "Urdu", "ne": "Nepali", "fr": "French",
-    "de": "German", "es": "Spanish", "it": "Italian", "pt": "Portuguese", "ja": "Japanese",
-    "zh": "Chinese"
-}
-
-SYSTEM = """You are the content abstraction engine for an academic/professional note-taking platform.
-Return valid JSON only. Do not invent facts. Use empty strings/lists when information is absent.
-Preserve names, numbers, deadlines and technical terms from the transcript.
-"""
-
-
-def client():
-    if not settings.gemini_api_key:
-        raise RuntimeError("GEMINI_API_KEY is not configured in backend/.env")
+def _get_client() -> genai.Client:
     return genai.Client(api_key=settings.gemini_api_key)
 
+def _get_candidate_models() -> List[str]:
+    candidate_models = [
+        settings.gemini_model or "gemini-3.8-flash",
+        "gemini-3.8-flash",
+        "gemini-3.5-flash-lite",
+        "gemini-3.1-flash-lite",
+        "gemini-2.0-flash",
+        "gemini-1.5-flash",
+    ]
+    # Remove duplicates while preserving priority order
+    return list(dict.fromkeys(candidate_models))
 
-def language_name(code: str) -> str:
-    return SUPPORTED_LANGUAGES.get(code, code or "English")
+def _generate_with_fallback(contents: Any, config: types.GenerateContentConfig | None = None) -> str:
+    client = _get_client()
+    models = _get_candidate_models()
+    last_error = None
+
+    for model_name in models:
+        try:
+            response = client.models.generate_content(
+                model=model_name,
+                contents=contents,
+                config=config,
+            )
+            if response and response.text:
+                return response.text
+        except Exception as e:
+            last_error = e
+            continue
+
+    if last_error:
+        raise last_error
+    raise RuntimeError("No output generated from Gemini API candidate models.")
 
 
-def generate_notes(transcript: str, note_type: str, target_language: str = "en"):
-    if note_type not in NOTE_SCHEMAS:
-        raise ValueError("note_type must be summary, meeting, lecture or task")
-    language = language_name(target_language)
-    schema = {k: "string or list" for k in NOTE_SCHEMAS[note_type]}
-    prompt = f"""{SYSTEM}
-Generate {note_type.upper()} notes using exactly these JSON keys: {json.dumps(schema)}.
+# ============================================================================
+# Note Generation
+# ============================================================================
 
-TARGET LANGUAGE: {language}
-Write EVERY human-readable value in the JSON in {language}, including titles, section content,
-bullet points, descriptions, explanations, conclusions, action items and task text.
-Do not leave English headings or explanatory sentences when {language} is not English.
-Technical names, programming keywords, product names and proper nouns may remain in their original
-form when translating them would make them inaccurate. Preserve the original meaning and all useful facts.
+def generate_notes(
+    transcript: str,
+    note_type: str = "summary",
+    language: str = "en",
+) -> Tuple[Dict[str, Any], Dict[str, str]]:
+    """
+    Generates structured notes according to note_type and language.
+    Returns (content_dict, labels_dict).
+    """
+    prompt = f"""
+You are an expert note-taking assistant. Analyze the following transcript and generate structured notes.
 
-TRANSCRIPT:
+Note Type: {note_type}
+Target Language: {language}
+
+Transcript:
 {transcript}
+
+Instructions:
+1. Provide the output in strict JSON format.
+2. Structure the JSON logically based on the note type:
+   - summary: title, overview, main_points (list), key_insights (list), conclusion
+   - meeting: meeting_title, agenda (list), discussion_points (list), decisions_made (list), action_items (list), next_meeting
+   - lecture: subject, topic, learning_objectives (list), main_concepts (list), detailed_explanation, examples (list), quick_revision (list)
+   - task: task_title, description, tasks (list of objects with 'title', 'priority', 'deadline'), next_steps (list)
+3. Translate all values to the requested target language: {language}.
+4. Return ONLY valid JSON with keys matching the schema. No markdown formatting or extra commentary.
 """
-    result = client().models.generate_content(
-        model=settings.gemini_model,
-        contents=prompt,
-        config=types.GenerateContentConfig(response_mime_type="application/json", temperature=0.2),
+
+    config = types.GenerateContentConfig(
+        response_mime_type="application/json",
+        temperature=0.2,
     )
-    return json.loads(result.text)
+
+    raw_json = _generate_with_fallback(contents=prompt, config=config)
+
+    # Clean code fences if any leaked through
+    cleaned = re.sub(r"^```(?:json)?\s*", "", raw_json.strip())
+    cleaned = re.sub(r"\s*```$", "", cleaned)
+
+    try:
+        content = json.loads(cleaned)
+    except Exception:
+        content = {
+            "title": f"{note_type.title()} Notes",
+            "overview": raw_json,
+        }
+
+    # Generate friendly field labels
+    labels = {k: k.replace("_", " ").title() for k in content.keys()}
+    return content, labels
 
 
+# ============================================================================
+# Note Translation
+# ============================================================================
 
-def generate_note_labels(note_type: str, target_language: str = "en"):
-    if note_type not in NOTE_SCHEMAS:
-        raise ValueError("Invalid note type")
-    language = language_name(target_language)
-    keys = NOTE_SCHEMAS[note_type]
-    prompt = f"""Translate these note section labels into {language}. Return a JSON object using exactly the same keys.
-Keys: {json.dumps(keys)}
-Translate the label values naturally and concisely. Do not add or remove keys."""
-    result = client().models.generate_content(
-        model=settings.gemini_model,
-        contents=prompt,
-        config=types.GenerateContentConfig(response_mime_type="application/json", temperature=0.0),
-    )
-    return json.loads(result.text)
+def translate_notes(
+    content: Dict[str, Any],
+    target_language: str,
+    note_type: str = "summary",
+) -> Tuple[Dict[str, Any], Dict[str, str]]:
+    """
+    Translates an existing structured note dictionary to target_language.
+    """
+    prompt = f"""
+Translate all text values in the following JSON object to language: {target_language}.
+Do NOT translate the JSON keys. Keep the structure identical.
 
-def translate_notes(note_json: dict, target_language: str):
-    language = language_name(target_language)
-    prompt = f"""{SYSTEM}
-Translate the following complete structured note into {language}.
+Original JSON:
+{json.dumps(content, ensure_ascii=False)}
 
-Rules:
-- Return the SAME JSON structure and keys.
-- Translate every human-readable value, including titles, descriptions, headings represented as values,
-  bullet points, action items, deadlines descriptions, conclusions and task text.
-- Do not omit, summarize, expand, or change facts.
-- Preserve numbers, dates, names, code, URLs and technical identifiers where appropriate.
-- For lists of objects, translate each human-readable field while preserving the object structure.
-- The JSON keys themselves must remain unchanged.
-
-NOTE JSON:
-{json.dumps(note_json, ensure_ascii=False)}
+Output ONLY valid JSON.
 """
-    result = client().models.generate_content(
-        model=settings.gemini_model,
-        contents=prompt,
-        config=types.GenerateContentConfig(response_mime_type="application/json", temperature=0.1),
+
+    config = types.GenerateContentConfig(
+        response_mime_type="application/json",
+        temperature=0.1,
     )
-    return json.loads(result.text)
+
+    raw_json = _generate_with_fallback(contents=prompt, config=config)
+
+    cleaned = re.sub(r"^```(?:json)?\s*", "", raw_json.strip())
+    cleaned = re.sub(r"\s*```$", "", cleaned)
+
+    try:
+        translated_content = json.loads(cleaned)
+    except Exception:
+        translated_content = content
+
+    labels = {k: k.replace("_", " ").title() for k in translated_content.keys()}
+    return translated_content, labels
 
 
-def chat_with_note(transcript: str, note_json: dict, question: str):
-    prompt = f"{SYSTEM}\nAnswer the user's question using only the supplied transcript and notes. If the answer is not present, say so.\nNOTES: {json.dumps(note_json, ensure_ascii=False)}\nTRANSCRIPT: {transcript}\nQUESTION: {question}"
-    result = client().models.generate_content(model=settings.gemini_model, contents=prompt, config=types.GenerateContentConfig(temperature=0.2))
-    return result.text
+# ============================================================================
+# Chat with Note
+# ============================================================================
 
+def chat_with_note(note_data: Dict[str, Any], question: str) -> str:
+    """
+    Answers questions based on the generated note context.
+    """
+    prompt = f"""
+Context Notes:
+{json.dumps(note_data, ensure_ascii=False, indent=2)}
 
-def extract_tasks(transcript: str):
-    prompt = f"{SYSTEM}\nExtract actionable tasks from this transcript. Return JSON array. Each item must have title, description, assigned_to, deadline, priority, status. Only include tasks explicitly supported by the transcript.\nTRANSCRIPT:\n{transcript}"
-    result = client().models.generate_content(model=settings.gemini_model, contents=prompt, config=types.GenerateContentConfig(response_mime_type="application/json", temperature=0.1))
-    return json.loads(result.text)
+User Question:
+{question}
 
-
-def analyze_frame(image_path: str, transcript_context: str = "", timestamp: float = 0.0):
-    with open(image_path, "rb") as f:
-        data = f.read()
-    prompt = f"""Analyze this video frame for a smart-notes multimedia extraction system.
-Timestamp: {timestamp:.2f} seconds.
-
-Determine whether the frame contains meaningful visual content that should be shown to the user.
-Possible types: diagram, code, image, slide, text, table, chart, or other.
-Ignore ordinary talking-head frames, empty screens, repeated frames and decorative visuals.
-If it contains code, transcribe the visible code as accurately as possible.
-If it contains a diagram/chart/table/slide, describe its meaningful content and visible text.
-Use the spoken context only to improve interpretation; do not invent visual details.
-
-Return JSON with exactly these fields:
-has_visual, type, title, description, extracted_text, code, code_language, importance, spoken_context.
-importance must be one of: high, medium, low.
-
-SPOKEN CONTEXT AROUND THIS TIMESTAMP:
-{transcript_context or '(not available)'}
+Answer the user's question directly, clearly, and concisely based strictly on the provided notes context.
 """
-    result = client().models.generate_content(
-        model=settings.gemini_model,
-        contents=[types.Part.from_bytes(data=data, mime_type="image/jpeg"), prompt],
-        config=types.GenerateContentConfig(response_mime_type="application/json", temperature=0.1),
+    return _generate_with_fallback(contents=prompt)
+
+
+# ============================================================================
+# Task Extraction
+# ============================================================================
+
+def extract_tasks(transcript: str) -> List[Dict[str, Any]]:
+    """
+    Extracts action items, deadlines, priorities, and assignees from a transcript.
+    """
+    prompt = f"""
+Analyze the following transcript and extract actionable tasks and commitments.
+
+Transcript:
+{transcript}
+
+Return a JSON array of objects with the following schema:
+[
+  {{
+    "title": "Task title",
+    "description": "Brief description of the action item",
+    "priority": "High | Medium | Low",
+    "deadline": "YYYY-MM-DD or specific deadline text if mentioned, else null",
+    "assigned_to": "Person responsible or null"
+  }}
+]
+
+Return ONLY valid JSON. No markdown backticks.
+"""
+
+    config = types.GenerateContentConfig(
+        response_mime_type="application/json",
+        temperature=0.2,
     )
-    return json.loads(result.text)
+
+    raw_json = _generate_with_fallback(contents=prompt, config=config)
+
+    cleaned = re.sub(r"^```(?:json)?\s*", "", raw_json.strip())
+    cleaned = re.sub(r"\s*```$", "", cleaned)
+
+    try:
+        tasks = json.loads(cleaned)
+        if isinstance(tasks, list):
+            return tasks
+        return []
+    except Exception:
+        return []
+
+
+# ============================================================================
+# Visual Frame Analysis
+# ============================================================================
+
+def analyze_frame(frame_path: str, timestamp: float = 0.0) -> Dict[str, Any]:
+    """
+    Analyzes an extracted video keyframe image using Gemini Vision.
+    """
+    client = _get_client()
+    image_file = client.files.upload(file=frame_path)
+
+    prompt = f"""
+Analyze this keyframe image extracted from a video at timestamp {int(timestamp)} seconds.
+Identify visual information such as code blocks, slides, diagrams, charts, or visible text.
+
+Return a JSON object in this format:
+{{
+  "type": "code | slide | diagram | chart | visual",
+  "title": "Brief title summarizing this frame",
+  "description": "Detailed explanation of visual contents",
+  "extracted_text": "Any readable text on the slide or diagram",
+  "code": "Extract any visible source code verbatim, else null"
+}}
+
+Return ONLY valid JSON.
+"""
+
+    config = types.GenerateContentConfig(
+        response_mime_type="application/json",
+        temperature=0.1,
+    )
+
+    try:
+        raw_json = _generate_with_fallback(contents=[image_file, prompt], config=config)
+        cleaned = re.sub(r"^```(?:json)?\s*", "", raw_json.strip())
+        cleaned = re.sub(r"\s*```$", "", cleaned)
+        analysis = json.loads(cleaned)
+    except Exception:
+        analysis = {
+            "type": "visual",
+            "title": f"Keyframe at {int(timestamp)}s",
+            "description": "Visual frame captured from video.",
+            "extracted_text": "",
+            "code": "",
+        }
+    finally:
+        try:
+            client.files.delete(name=image_file.name)
+        except Exception:
+            pass
+
+    return analysis

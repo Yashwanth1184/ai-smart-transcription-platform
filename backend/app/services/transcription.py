@@ -28,12 +28,11 @@ def transcribe(audio_path: str, language: str | None = None):
 
     # Priority order matching your account's available models and quotas
     candidate_models = [
-        settings.gemini_model or "gemini-2.0-flash",
-        "gemini-2.0-flash",
-        "gemini-2.0-flash-lite",
-        "gemini-3.1-flash-lite",
-        "gemini-3.5-flash-lite",
+        settings.gemini_model or "gemini-3.8-flash",
         "gemini-3.8-flash",
+        "gemini-3.5-flash-lite",
+        "gemini-3.1-flash-lite",
+        "gemini-2.0-flash",
     ]
     # Deduplicate while preserving order
     models_to_try = list(dict.fromkeys(candidate_models))
