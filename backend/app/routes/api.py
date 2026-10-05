@@ -56,6 +56,7 @@ class GenerateNotesRequest(BaseModel):
     media_id: int
     note_type: str = "summary"
     note_language: str = "en"
+    transcript: Optional[str] = None
 
 
 class TranslateNoteRequest(BaseModel):
@@ -235,11 +236,21 @@ def api_generate_notes(
     db: Session = Depends(get_db),
 ):
     media = db.query(Media).filter(Media.id == req.media_id).first()
-    if not media or not media.transcript:
+    if not media:
+        raise HTTPException(status_code=404, detail="Media not found.")
+
+    # Prioritize the transcript from the frontend textarea, fallback to DB
+    transcript_text = (req.transcript or "").strip() or (media.transcript or "").strip()
+    if not transcript_text:
         raise HTTPException(
             status_code=400,
             detail="Valid transcript is required before generating notes.",
         )
+
+    # Ensure DB record holds the latest transcript
+    if not media.transcript or media.transcript != transcript_text:
+        media.transcript = transcript_text
+        db.commit()
 
     try:
         # Pass language using either 'language' or positional to match ai.py
