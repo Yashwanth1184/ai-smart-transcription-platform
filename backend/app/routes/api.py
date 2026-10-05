@@ -235,10 +235,83 @@ def api_generate_notes(
     req: GenerateNotesRequest,
     db: Session = Depends(get_db),
 ):
-    media = db.query(Media).filter(Media.id == req.media_id).first()
-    if not media:
-        raise HTTPException(status_code=404, detail="Media not found.")
+    # 1. Try to find media by requested ID, or fall back to the most recent media record
+    media = None
+    if req.media_id:
+        media = db.query(Media).filter(Media.id == req.media_id).first()
 
+    if not media:
+        media = db.query(Media).order_by(Media.id.desc()).first()
+
+    # 2. Extract transcript from frontend or DB record
+    transcript_text = (req.transcript or "").strip() or (media.transcript if media else "").strip()
+
+    if not transcript_text:
+        raise HTTPException(
+            status_code=400,
+            detail="Valid transcript is required before generating notes.",
+        )
+
+    # 3. If no media record exists at all in the database, create one on the fly
+    if not media:
+        media = Media()
+        if hasattr(media, "original_name"):
+            media.original_name = "transcript_session"
+        if hasattr(media, "filename"):
+            media.filename = "transcript_session"
+        if hasattr(media, "file_path"):
+            media.file_path = "storage/session"
+        if hasattr(media, "media_type"):
+            media.media_type = "text"
+        if hasattr(media, "status"):
+            media.status = "transcribed"
+        if hasattr(media, "transcript"):
+            media.transcript = transcript_text
+        db.add(media)
+        db.commit()
+        db.refresh(media)
+    else:
+        # Update existing record with the latest transcript text
+        if hasattr(media, "transcript") and media.transcript != transcript_text:
+            media.transcript = transcript_text
+            db.commit()
+
+    # 4. Generate structured notes using Gemini
+    try:
+        try:
+            content, labels = generate_notes(
+                transcript=transcript_text,
+                note_type=req.note_type,
+                language=req.note_language,
+            )
+        except TypeError:
+            content, labels = generate_notes(
+                transcript=transcript_text,
+                note_type=req.note_type,
+            )
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"AI note generation failed: {str(e)}")
+
+    note = Note(
+        media_id=media.id,
+        title=content.get("title") or f"{req.note_type.title()} Notes",
+        note_type=req.note_type,
+        note_language=req.note_language,
+        content_json=json.dumps(content),
+        note_labels_json=json.dumps(labels),
+    )
+    db.add(note)
+    db.commit()
+    db.refresh(note)
+
+    return {
+        "id": note.id,
+        "title": note.title,
+        "note_type": note.note_type,
+        "note_language": note.note_language,
+        "content": content,
+        "labels": labels,
+    }
     # Prioritize the transcript from the frontend textarea, fallback to DB
     transcript_text = (req.transcript or "").strip() or (media.transcript or "").strip()
     if not transcript_text:
