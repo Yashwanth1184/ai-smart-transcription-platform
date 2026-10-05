@@ -24,6 +24,18 @@ function App() {
   const mediaRecorderRef = useRef(null);
   const audioChunksRef = useRef([]);
 
+  // Room Collaboration State
+  const [roomId, setRoomId] = useState("");
+  const [connectedRoom, setConnectedRoom] = useState("");
+  const [userName, setUserName] = useState("User_" + Math.floor(Math.random() * 1000));
+  const [roomUsers, setRoomUsers] = useState([]);
+  const [roomMessages, setRoomMessages] = useState([]);
+  const [roomInput, setRoomInput] = useState("");
+  const [voiceActive, setVoiceActive] = useState(false);
+  const wsRef = useRef(null);
+  const localStreamRef = useRef(null);
+  const peerConnections = useRef({});
+
   useEffect(() => {
     fetchNotes();
     fetchTasks();
@@ -53,59 +65,160 @@ function App() {
     }
   }
 
-  async function uploadAndTranscribe() {
-    if (!file) {
-      setErrorMsg("Please select an audio or video file first.");
-      return;
-    }
+  async function upload() {
+    if (!file) return;
     setErrorMsg("");
-    setLoadingMsg("Uploading media file...");
-
+    setLoadingMsg("Uploading file...");
     const formData = new FormData();
     formData.append("file", file);
-
     try {
-      const upRes = await fetch(`${API_BASE}/upload`, {
+      const res = await fetch(`${API_BASE}/upload`, {
         method: "POST",
         body: formData,
       });
-
-      if (!upRes.ok) {
-        const err = await upRes.json();
+      if (!res.ok) {
+        const err = await res.json();
         throw new Error(err.detail || "Upload failed");
       }
+      const data = await res.json();
+      setMedia(data);
+      setLoadingMsg("");
+    } catch (err) {
+      setLoadingMsg("");
+      setErrorMsg(err.message);
+    }
+  }
 
-      const mediaData = await upRes.json();
-      setMedia(mediaData);
-
-      setLoadingMsg("Transcribing audio content with Gemini AI...");
-      const transRes = await fetch(
-        `${API_BASE}/transcribe/${mediaData.id}?language=${transcriptionLang}`,
-        { method: "POST" }
-      );
-
-      if (!transRes.ok) {
-        const err = await transRes.json();
+  async function transcribe() {
+    if (!media) return;
+    setErrorMsg("");
+    setLoadingMsg("Transcribing audio...");
+    try {
+      const res = await fetch(`${API_BASE}/transcribe/${media.id}?language=${transcriptionLang}`, {
+        method: "POST",
+      });
+      if (!res.ok) {
+        const err = await res.json();
         throw new Error(err.detail || "Transcription failed");
       }
+      const data = await res.json();
+      setTranscript(data.text);
 
-      const transData = await transRes.json();
-      setTranscript(transData.text || "");
-
-      if (mediaData.media_type === "video") {
-        setLoadingMsg("Extracting video keyframes...");
-        fetch(`${API_BASE}/media/extract-frames/${mediaData.id}`, { method: "POST" })
-          .then((r) => r.json())
-          .then((fData) => {
-            if (fData.frames) setFrames(fData.frames);
-          })
-          .catch(console.error);
+      if (media.media_type === "video") {
+        setLoadingMsg("Extracting visual content from video...");
+        try {
+          const fRes = await fetch(`${API_BASE}/media/extract-frames/${media.id}`, { method: "POST" });
+          if (fRes.ok) {
+            const fData = await fRes.json();
+            setFrames(fData.frames || []);
+          }
+        } catch (fErr) {
+          console.error("Frame extraction error:", fErr);
+        }
       }
 
       setLoadingMsg("");
     } catch (err) {
       setLoadingMsg("");
-      setErrorMsg(err.message || "Failed to process audio.");
+      setErrorMsg(err.message);
+    }
+  }
+
+  async function generate() {
+    if (!media) return;
+    setErrorMsg("");
+    setLoadingMsg(`Generating ${noteType} notes...`);
+    try {
+      const res = await fetch(`${API_BASE}/generate-notes`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          media_id: media.id,
+          note_type: noteType,
+          note_language: noteLanguage,
+          transcript: transcript ? transcript.trim() : "",
+        }),
+      });
+      if (!res.ok) {
+        const err = await res.json();
+        throw new Error(err.detail || "Generation failed");
+      }
+      const data = await res.json();
+      setCurrentNote(data);
+      fetchNotes();
+      setLoadingMsg("");
+    } catch (err) {
+      setLoadingMsg("");
+      setErrorMsg(err.message);
+    }
+  }
+
+  async function translate(targetLang) {
+    if (!currentNote) return;
+    setErrorMsg("");
+    setLoadingMsg(`Translating notes...`);
+    try {
+      const res = await fetch(`${API_BASE}/notes/${currentNote.id}/translate`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ target_language: targetLang }),
+      });
+      if (!res.ok) {
+        const err = await res.json();
+        throw new Error(err.detail || "Translation failed");
+      }
+      const data = await res.json();
+      setCurrentNote(data);
+      fetchNotes();
+      setLoadingMsg("");
+    } catch (err) {
+      setLoadingMsg("");
+      setErrorMsg(err.message);
+    }
+  }
+
+  async function extractTasks() {
+    if (!media) return;
+    setErrorMsg("");
+    setLoadingMsg("Extracting tasks and commitments...");
+    try {
+      const res = await fetch(`${API_BASE}/tasks/extract/${media.id}`, {
+        method: "POST",
+      });
+      if (!res.ok) {
+        const err = await res.json();
+        throw new Error(err.detail || "Task extraction failed");
+      }
+      fetchTasks();
+      setActiveTab("Tasks & Reminders");
+      setLoadingMsg("");
+    } catch (err) {
+      setLoadingMsg("");
+      setErrorMsg(err.message);
+    }
+  }
+
+  async function askQuestion(e) {
+    e.preventDefault();
+    if (!chatQuestion.trim() || !currentNote) return;
+    const q = chatQuestion;
+    setChatQuestion("");
+    setChatHistory((prev) => [...prev, { role: "user", text: q }]);
+
+    try {
+      const res = await fetch(`${API_BASE}/chat`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ note_id: currentNote.id, question: q }),
+      });
+      if (res.ok) {
+        const data = await res.json();
+        setChatHistory((prev) => [...prev, { role: "ai", text: data.answer }]);
+      } else {
+        setChatHistory((prev) => [...prev, { role: "ai", text: "Error fetching answer." }]);
+      }
+    } catch (err) {
+      setChatHistory((prev) => [...prev, { role: "ai", text: "Connection error." }]);
     }
   }
 
@@ -114,23 +227,18 @@ function App() {
       const stream = await navigator.mediaDevices.getUserMedia({ audio: true });
       mediaRecorderRef.current = new MediaRecorder(stream);
       audioChunksRef.current = [];
-
       mediaRecorderRef.current.ondataavailable = (e) => {
         if (e.data.size > 0) audioChunksRef.current.push(e.data);
       };
-
       mediaRecorderRef.current.onstop = () => {
         const audioBlob = new Blob(audioChunksRef.current, { type: "audio/webm" });
-        const recordedFile = new File([audioBlob], "recorded_audio.webm", {
-          type: "audio/webm",
-        });
+        const recordedFile = new File([audioBlob], "recorded_audio.webm", { type: "audio/webm" });
         setFile(recordedFile);
       };
-
       mediaRecorderRef.current.start();
       setIsRecording(true);
     } catch (err) {
-      setErrorMsg("Microphone permission denied or unsupported.");
+      setErrorMsg("Microphone access denied or not supported.");
     }
   }
 
@@ -141,489 +249,647 @@ function App() {
     }
   }
 
-  async function generate() {
-    if (!transcript.trim()) {
-      setErrorMsg("Valid transcript is required before generating notes.");
-      return;
-    }
-    setErrorMsg("");
-    setLoadingMsg(`Generating ${noteType} notes...`);
-
+  async function createRoom() {
     try {
-      const res = await fetch(`${API_BASE}/generate-notes`, {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({
-          media_id: media ? media.id : null,
-          note_type: noteType,
-          note_language: noteLanguage,
-          transcript: transcript.trim(),
-        }),
-      });
-
-      if (!res.ok) {
-        const err = await res.json();
-        throw new Error(err.detail || "Note generation failed");
+      const res = await fetch(`${API_BASE}/collaboration/rooms`, { method: "POST" });
+      if (res.ok) {
+        const data = await res.json();
+        setRoomId(data.room_id);
+        joinRoom(data.room_id);
       }
-
-      const note = await res.json();
-      setCurrentNote(note);
-      fetchNotes();
-      setLoadingMsg("");
     } catch (err) {
-      setLoadingMsg("");
-      setErrorMsg(err.message || "Failed to generate notes.");
+      setErrorMsg("Failed to create room.");
     }
   }
 
-  async function handleExtractTasks() {
-    if (!transcript.trim()) {
-      setErrorMsg("Please upload and transcribe a file first.");
-      return;
-    }
-    setErrorMsg("");
-    setLoadingMsg("Extracting actionable tasks...");
+  function joinRoom(idToJoin) {
+    const targetRoom = idToJoin || roomId;
+    if (!targetRoom.trim()) return;
 
-    try {
-      const res = await fetch(`${API_BASE}/tasks/extract/${media ? media.id : 1}`, { method: "POST" });
-      if (!res.ok) {
-        const err = await res.json();
-        throw new Error(err.detail || "Extraction failed");
+    if (wsRef.current) wsRef.current.close();
+
+    const host = API_BASE.replace(/^https?:\/\//, "").replace(/\/api$/, "");
+    const protocol = window.location.protocol === "https:" ? "wss:" : "ws:";
+    const wsUrl = `${protocol}//${host}/api/collaboration/${targetRoom.trim()}`;
+    const ws = new WebSocket(wsUrl);
+
+    ws.onopen = () => {
+      setConnectedRoom(targetRoom.trim());
+      ws.send(JSON.stringify({ type: "join", user_id: userName, user_name: userName }));
+    };
+
+    ws.onmessage = async (evt) => {
+      const msg = JSON.parse(evt.data);
+      if (msg.type === "room_state") {
+        setRoomUsers(msg.users);
+      } else if (msg.type === "room_message") {
+        setRoomMessages((prev) => [...prev, { user: msg.user_name, text: msg.message }]);
+      } else if (msg.type === "signal") {
+        handleSignal(msg.from, msg.signal);
       }
-      await fetchTasks();
-      setActiveTab("Tasks & Reminders");
-      setLoadingMsg("");
-    } catch (err) {
-      setLoadingMsg("");
-      setErrorMsg(err.message || "Failed to extract tasks.");
+    };
+
+    ws.onclose = () => {
+      setConnectedRoom("");
+      setRoomUsers([]);
+    };
+
+    wsRef.current = ws;
+  }
+
+  async function toggleVoice() {
+    if (!connectedRoom || !wsRef.current) return;
+    if (!voiceActive) {
+      try {
+        const stream = await navigator.mediaDevices.getUserMedia({ audio: true });
+        localStreamRef.current = stream;
+        setVoiceActive(true);
+        wsRef.current.send(JSON.stringify({ type: "voice_state", enabled: true }));
+        initiatePeerConnections();
+      } catch (e) {
+        setErrorMsg("Failed to access microphone for voice chat.");
+      }
+    } else {
+      if (localStreamRef.current) {
+        localStreamRef.current.getTracks().forEach((track) => track.stop());
+      }
+      setVoiceActive(false);
+      wsRef.current.send(JSON.stringify({ type: "voice_state", enabled: false }));
     }
   }
 
-  async function handleChat(e) {
-    e.preventDefault();
-    if (!chatQuestion.trim() || !currentNote) return;
+  function initiatePeerConnections() {
+    roomUsers.forEach((u) => {
+      if (u.user_id !== userName && u.voice_enabled) {
+        createPeerConnection(u.user_id, true);
+      }
+    });
+  }
 
-    const userQ = chatQuestion;
-    setChatQuestion("");
-    setChatHistory((prev) => [...prev, { sender: "user", text: userQ }]);
+  function createPeerConnection(targetUserId, isInitiator) {
+    const pc = new RTCPeerConnection({
+      iceServers: [{ urls: "stun:stun.l.google.com:19302" }],
+    });
 
-    try {
-      const res = await fetch(`${API_BASE}/chat`, {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({
-          note_id: currentNote.id,
-          question: userQ,
-        }),
+    if (localStreamRef.current) {
+      localStreamRef.current.getTracks().forEach((track) => {
+        pc.addTrack(track, localStreamRef.current);
       });
-
-      if (!res.ok) throw new Error("Chat failed");
-      const data = await res.json();
-      setChatHistory((prev) => [...prev, { sender: "ai", text: data.answer }]);
-    } catch (err) {
-      setChatHistory((prev) => [
-        ...prev,
-        { sender: "ai", text: "Error fetching answer. Please try again." },
-      ]);
     }
-  }
 
-  function renderNoteDetails(content) {
-    if (!content) return null;
-    return (
-      <div className="space-y-4">
-        {Object.entries(content).map(([key, val]) => {
-          const title = key.replace(/_/g, " ").toUpperCase();
-          if (Array.isArray(val)) {
-            return (
-              <div key={key} className="bg-slate-900/60 p-4 rounded-xl border border-white/10">
-                <h4 className="text-sm font-semibold tracking-wider text-rose-400 mb-2">{title}</h4>
-                <ul className="list-disc list-inside space-y-1 text-slate-200">
-                  {val.map((item, idx) => (
-                    <li key={idx}>
-                      {typeof item === "object" ? JSON.stringify(item) : item}
-                    </li>
-                  ))}
-                </ul>
-              </div>
-            );
-          }
-          return (
-            <div key={key} className="bg-slate-900/60 p-4 rounded-xl border border-white/10">
-              <h4 className="text-sm font-semibold tracking-wider text-rose-400 mb-2">{title}</h4>
-              <p className="text-slate-200 whitespace-pre-wrap">{typeof val === "object" ? JSON.stringify(val) : val}</p>
-            </div>
+    pc.onicecandidate = (event) => {
+      if (event.candidate && wsRef.current) {
+        wsRef.current.send(
+          JSON.stringify({
+            type: "signal",
+            target: targetUserId,
+            signal: { candidate: event.candidate },
+          })
+        );
+      }
+    };
+
+    pc.ontrack = (event) => {
+      const audioEl = new Audio();
+      audioEl.srcObject = event.streams[0];
+      audioEl.play().catch(console.error);
+    };
+
+    if (isInitiator) {
+      pc.createOffer().then((offer) => {
+        pc.setLocalDescription(offer);
+        if (wsRef.current) {
+          wsRef.current.send(
+            JSON.stringify({
+              type: "signal",
+              target: targetUserId,
+              signal: { sdp: offer },
+            })
           );
-        })}
-      </div>
-    );
+        }
+      });
+    }
+
+    peerConnections.current[targetUserId] = pc;
+    return pc;
   }
 
-  const navItems = [
-    { id: "Home", label: "Home", icon: "M3 12l2-2m0 0l7-7 7 7M5 10v10a1 1 0 001 1h3m10-11l2 2m-2-2v10a1 1 0 01-1 1h-3m-6 0a1 1 0 001-1v-4a1 1 0 011-1h2a1 1 0 011 1v4a1 1 0 001 1m-6 0h6" },
-    { id: "Transcribe", label: "Transcribe", icon: "M4 16v1a3 3 0 003 3h10a3 3 0 003-3v-1m-4-8l-4-4m0 0L8 8m4-4v12" },
-    { id: "My Notes", label: "My Notes", icon: "M9 12h6m-6 4h6m2 5H7a2 2 0 01-2-2V5a2 2 0 012-2h5.586a1 1 0 01.707.293l5.414 5.414a1 1 0 01.293.707V19a2 2 0 01-2 2z" },
-    { id: "Chat with Notes", label: "Chat with Notes", icon: "M8 12h.01M12 12h.01M16 12h.01M21 12c0 4.418-4.03 8-9 8a9.863 9.863 0 01-4.255-.949L3 20l1.395-3.72C3.512 15.042 3 13.574 3 12c0-4.418 4.03-8 9-8s9 3.582 9 8z" },
-    { id: "Tasks & Reminders", label: "Tasks & Reminders", icon: "M9 5H7a2 2 0 00-2 2v12a2 2 0 002 2h10a2 2 0 002-2V7a2 2 0 00-2-2h-2M9 5a2 2 0 002 2h2a2 2 0 002-2M9 5a2 2 0 012-2h2a2 2 0 012 2m-6 9l2 2 4-4" },
-    { id: "Multimedia", label: "Multimedia", icon: "M4 16l4.586-4.586a2 2 0 012.828 0L16 16m-2-2l1.586-1.586a2 2 0 012.828 0L20 14m-6-6h.01M6 20h12a2 2 0 002-2V6a2 2 0 00-2-2H6a2 2 0 00-2 2v12a2 2 0 002 2z" },
-    { id: "Export", label: "Export", icon: "M12 10v6m0 0l-3-3m3 3l3-3m2 8H7a2 2 0 01-2-2V5a2 2 0 012-2h5.586a1 1 0 01.707.293l5.414 5.414a1 1 0 01.293.707V19a2 2 0 01-2 2z" },
-  ];
+  async function handleSignal(fromUser, signal) {
+    let pc = peerConnections.current[fromUser];
+    if (!pc) {
+      pc = createPeerConnection(fromUser, false);
+    }
+
+    if (signal.sdp) {
+      await pc.setRemoteDescription(new RTCSessionDescription(signal.sdp));
+      if (signal.sdp.type === "offer") {
+        const answer = await pc.createAnswer();
+        await pc.setLocalDescription(answer);
+        if (wsRef.current) {
+          wsRef.current.send(
+            JSON.stringify({
+              type: "signal",
+              target: fromUser,
+              signal: { sdp: answer },
+            })
+          );
+        }
+      }
+    } else if (signal.candidate) {
+      await pc.addIceCandidate(new RTCIceCandidate(signal.candidate));
+    }
+  }
+
+  function sendRoomMessage(e) {
+    e.preventDefault();
+    if (!roomInput.trim() || !wsRef.current) return;
+    wsRef.current.send(JSON.stringify({ type: "room_message", message: roomInput }));
+    setRoomInput("");
+  }
 
   return (
-    <div className="flex h-screen bg-slate-950 text-slate-100 font-sans overflow-hidden">
+    <div className="flex h-screen w-screen overflow-hidden text-slate-100 font-sans">
       {/* Sidebar */}
-      <aside className="w-64 bg-slate-900/80 backdrop-blur-md border-r border-white/10 flex flex-col justify-between shrink-0">
+      <aside className="w-64 bg-slate-950/80 backdrop-blur-xl border-r border-slate-800/80 flex flex-col justify-between shrink-0 z-20">
         <div>
-          <div className="p-6 flex items-center space-x-3 border-b border-white/10">
-            <div className="h-10 w-10 rounded-xl bg-gradient-to-tr from-rose-500 to-amber-500 flex items-center justify-center text-white font-bold text-xl shadow-lg shadow-rose-500/20">
+          <div className="p-6 flex items-center gap-3">
+            <div className="h-9 w-9 rounded-xl bg-gradient-to-tr from-rose-500 to-amber-500 flex items-center justify-center text-white font-bold shadow-lg shadow-rose-500/20">
               🎙️
             </div>
-            <div>
-              <h2 className="font-bold text-lg leading-none tracking-tight">AI Smart Notes</h2>
-              <p className="text-xs text-slate-400 mt-1">Platform v1.0</p>
-            </div>
+            <span className="font-bold text-lg tracking-tight bg-gradient-to-r from-white to-slate-400 bg-clip-text text-transparent">
+              AI Smart Notes
+            </span>
           </div>
-          <nav className="p-4 space-y-1">
-            {navItems.map((item) => (
+
+          <nav className="px-3 space-y-1">
+            {[
+              { id: "Home", icon: "🏠" },
+              { id: "Transcribe", icon: "⬆️" },
+              { id: "My Notes", icon: "📑" },
+              { id: "Chat with Notes", icon: "💬" },
+              { id: "Tasks & Reminders", icon: "☑️" },
+              { id: "Multimedia", icon: "🖼️" },
+              { id: "Export", icon: "📥" },
+            ].map((tab) => (
               <button
-                key={item.id}
-                onClick={() => setActiveTab(item.id)}
-                className={`w-full flex items-center space-x-3 px-4 py-3 rounded-xl text-sm font-medium transition-all ${
-                  activeTab === item.id
-                    ? "bg-rose-500/20 text-rose-300 border border-rose-500/30 shadow-sm"
-                    : "text-slate-400 hover:text-slate-200 hover:bg-white/5"
+                key={tab.id}
+                onClick={() => setActiveTab(tab.id)}
+                className={`w-full flex items-center gap-3 px-4 py-2.5 rounded-xl font-medium text-sm transition-all duration-200 ${
+                  activeTab === tab.id
+                    ? "bg-rose-500/10 text-rose-400 border border-rose-500/20 shadow-sm"
+                    : "text-slate-400 hover:text-slate-200 hover:bg-slate-900/50"
                 }`}
               >
-                <svg className="w-5 h-5 shrink-0" fill="none" viewBox="0 0 24 24" stroke="currentColor">
-                  <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d={item.icon} />
-                </svg>
-                <span>{item.label}</span>
+                <span className="text-base">{tab.icon}</span>
+                {tab.id}
               </button>
             ))}
           </nav>
         </div>
+
+        <div className="p-4 border-t border-slate-800/80">
+          <button
+            onClick={() => setActiveTab("Collab")}
+            className="w-full flex items-center justify-center gap-2 py-2 px-3 rounded-lg bg-slate-900 hover:bg-slate-800 text-slate-300 text-xs font-semibold border border-slate-700/50 transition-all"
+          >
+            👥 Collab Online
+          </button>
+        </div>
       </aside>
 
       {/* Main Content */}
-      <main className="flex-1 overflow-y-auto p-8 relative">
-        <header className="mb-6 flex justify-between items-center">
+      <main className="flex-1 flex flex-col h-full bg-slate-950/60 overflow-y-auto">
+        <header className="px-8 py-6 border-b border-slate-800/60 flex justify-between items-center bg-slate-950/40 backdrop-blur-md sticky top-0 z-10">
           <div>
-            <h1 className="text-3xl font-extrabold tracking-tight bg-gradient-to-r from-rose-400 via-amber-300 to-amber-500 bg-clip-text text-transparent">
-              Transform Audio &amp; Video into Smart Notes
+            <h1 className="text-2xl font-bold text-slate-100 tracking-tight">
+              Transform Audio & Video into Smart Notes
             </h1>
-            <p className="text-sm text-slate-400 mt-1">
-              Transcribe, understand, organize and act on your content using AI.
-            </p>
+            <p className="text-xs text-slate-400 mt-1">Transcribe, understand, organize and act on your content using AI.</p>
           </div>
-          <div className="h-10 w-10 rounded-full bg-rose-600 flex items-center justify-center font-bold text-white shadow">
-            U
+          <div className="h-8 w-8 rounded-full bg-gradient-to-tr from-rose-500 to-amber-500 flex items-center justify-center text-xs font-bold text-white shadow-md">
+            Y
           </div>
         </header>
 
-        {/* Global Notifications */}
         {errorMsg && (
-          <div className="mb-6 p-4 rounded-xl bg-rose-950/70 border border-rose-500/50 text-rose-200 flex justify-between items-center shadow-lg">
+          <div className="mx-8 mt-4 p-3 bg-red-950/40 border border-red-500/30 text-red-300 rounded-xl text-sm flex justify-between items-center animate-fade-in">
             <span>{errorMsg}</span>
-            <button onClick={() => setErrorMsg("")} className="font-bold hover:text-white text-lg">×</button>
+            <button onClick={() => setErrorMsg("")} className="text-red-400 hover:text-red-200">×</button>
           </div>
         )}
 
         {loadingMsg && (
-          <div className="mb-6 p-4 rounded-xl bg-amber-950/70 border border-amber-500/50 text-amber-200 flex items-center space-x-3 shadow-lg">
-            <span className="animate-spin text-xl">⏳</span>
+          <div className="mx-8 mt-4 p-3 bg-amber-950/40 border border-amber-500/30 text-amber-300 rounded-xl text-sm flex items-center gap-2 animate-pulse">
+            <span className="animate-spin text-base">⏳</span>
             <span>{loadingMsg}</span>
           </div>
         )}
 
-        {/* Home & Transcribe View */}
-        {(activeTab === "Home" || activeTab === "Transcribe") && (
-          <div className="space-y-6">
-            {/* Note Type Cards */}
-            <div className="grid grid-cols-4 gap-4">
-              {[
-                { id: "summary", title: "Summary", desc: "General overview with key insights" },
-                { id: "meeting", title: "Meeting", desc: "Decisions, discussions and action items" },
-                { id: "lecture", title: "Lecture", desc: "Concepts, explanations and revision" },
-                { id: "task", title: "Task", desc: "Tasks, priorities and deadlines" },
-              ].map((card) => (
-                <div
-                  key={card.id}
-                  onClick={() => setNoteType(card.id)}
-                  className={`p-4 rounded-2xl cursor-pointer border transition-all ${
-                    noteType === card.id
-                      ? "bg-gradient-to-b from-rose-950/60 to-slate-900 border-rose-500/50 shadow-md shadow-rose-950/50"
-                      : "bg-slate-900/50 border-white/5 hover:border-white/10"
-                  }`}
-                >
-                  <div className="text-xl mb-2">📑</div>
-                  <h3 className="font-bold text-slate-100">{card.title}</h3>
-                  <p className="text-xs text-slate-400 mt-1">{card.desc}</p>
-                </div>
-              ))}
-            </div>
-
-            {/* Split Workspace */}
-            <div className="grid grid-cols-2 gap-6">
-              {/* Upload Card */}
-              <div className="bg-slate-900/60 backdrop-blur-md p-6 rounded-2xl border border-white/10 space-y-4 flex flex-col justify-between">
-                <div>
-                  <div className="border-2 border-dashed border-white/10 rounded-xl p-8 text-center hover:border-rose-500/40 transition">
-                    <div className="text-3xl mb-2">⬆️</div>
-                    <h3 className="font-semibold text-slate-200">Upload Audio or Video</h3>
-                    <p className="text-xs text-slate-500 mt-1">MP3, WAV, M4A, MP4, MOV, WEBM</p>
-                    <input
-                      type="file"
-                      id="fileUpload"
-                      className="hidden"
-                      accept="audio/*,video/*"
-                      onChange={(e) => setFile(e.target.files[0])}
-                    />
-                    <label
-                      htmlFor="fileUpload"
-                      className="mt-4 inline-block px-4 py-2 bg-slate-800 hover:bg-slate-700 text-slate-200 text-sm font-medium rounded-lg cursor-pointer border border-white/10 transition"
-                    >
-                      {file ? file.name : "Choose File"}
-                    </label>
-                  </div>
-
-                  <div className="grid grid-cols-2 gap-4 mt-4">
-                    <div>
-                      <label className="text-xs text-slate-400 font-medium block mb-1">Transcription Language</label>
-                      <select
-                        value={transcriptionLang}
-                        onChange={(e) => setTranscriptionLang(e.target.value)}
-                        className="w-full bg-slate-950 border border-white/10 rounded-lg px-3 py-2 text-sm text-slate-300 focus:outline-none focus:border-rose-500/50"
-                      >
-                        <option value="auto">Auto detect</option>
-                        <option value="en">English</option>
-                        <option value="es">Spanish</option>
-                        <option value="fr">French</option>
-                        <option value="de">German</option>
-                        <option value="hi">Hindi</option>
-                      </select>
-                    </div>
-
-                    <div>
-                      <label className="text-xs text-slate-400 font-medium block mb-1">Note Language</label>
-                      <select
-                        value={noteLanguage}
-                        onChange={(e) => setNoteLanguage(e.target.value)}
-                        className="w-full bg-slate-950 border border-white/10 rounded-lg px-3 py-2 text-sm text-slate-300 focus:outline-none focus:border-rose-500/50"
-                      >
-                        <option value="en">English</option>
-                        <option value="es">Spanish</option>
-                        <option value="fr">French</option>
-                        <option value="de">German</option>
-                        <option value="hi">Hindi</option>
-                      </select>
-                    </div>
-                  </div>
-                </div>
-
-                <div className="flex space-x-3 pt-4 border-t border-white/10">
-                  <button
-                    onClick={isRecording ? stopRecording : startRecording}
-                    className={`flex-1 py-2.5 rounded-xl text-sm font-semibold border transition ${
-                      isRecording
-                        ? "bg-rose-600 text-white border-rose-400 animate-pulse"
-                        : "bg-slate-800 hover:bg-slate-700 text-slate-200 border-white/10"
+        <div className="p-8 flex-1">
+          {activeTab === "Home" || activeTab === "Transcribe" ? (
+            <div className="space-y-6">
+              {/* Note Types Selector */}
+              <div className="grid grid-cols-4 gap-4">
+                {[
+                  { id: "summary", label: "Summary", desc: "General overview with key insights" },
+                  { id: "meeting", label: "Meeting", desc: "Decisions, discussions and action items" },
+                  { id: "lecture", label: "Lecture", desc: "Concepts, explanations and revision" },
+                  { id: "task", label: "Task", desc: "Tasks, priorities and deadlines" },
+                ].map((item) => (
+                  <div
+                    key={item.id}
+                    onClick={() => setNoteType(item.id)}
+                    className={`cursor-pointer p-4 rounded-xl border transition-all duration-200 ${
+                      noteType === item.id
+                        ? "bg-slate-900/90 border-rose-500/40 shadow-md shadow-rose-950/20"
+                        : "bg-slate-900/30 border-slate-800/60 hover:border-slate-700/60"
                     }`}
                   >
-                    {isRecording ? "⏹️ Stop Recording" : "⏺️ Record Audio"}
-                  </button>
-                  <button
-                    onClick={uploadAndTranscribe}
-                    className="flex-1 py-2.5 rounded-xl text-sm font-semibold bg-gradient-to-r from-rose-500 to-amber-500 text-white shadow-lg shadow-rose-500/20 hover:opacity-95 transition"
-                  >
-                    ▶️ Upload &amp; Transcribe
-                  </button>
-                </div>
-              </div>
-
-              {/* Transcript Card */}
-              <div className="bg-slate-900/60 backdrop-blur-md p-6 rounded-2xl border border-white/10 flex flex-col justify-between">
-                <div>
-                  <div className="flex justify-between items-center mb-3">
-                    <h3 className="font-semibold text-slate-200">Transcript</h3>
-                    <span className="text-xs font-semibold px-2.5 py-0.5 rounded-full bg-rose-500/20 text-rose-300 border border-rose-500/30 uppercase tracking-wider">
-                      {noteType} mode
-                    </span>
+                    <div className="text-lg mb-1">📄</div>
+                    <h3 className="font-semibold text-slate-200 text-sm">{item.label}</h3>
+                    <p className="text-xs text-slate-400 mt-1 line-clamp-2">{item.desc}</p>
                   </div>
-                  <textarea
-                    value={transcript}
-                    onChange={(e) => setTranscript(e.target.value)}
-                    placeholder="Your transcript will appear here after transcription. You can also paste transcript text for testing."
-                    className="w-full h-56 bg-slate-950/80 border border-white/10 rounded-xl p-3 text-sm text-slate-200 placeholder-slate-600 focus:outline-none focus:border-rose-500/50 resize-none font-mono"
-                  />
-                </div>
-
-                <div className="pt-4 border-t border-white/10 space-y-3">
-                  <div className="flex space-x-3">
-                    <button
-                      onClick={generate}
-                      className="flex-1 py-2.5 rounded-xl text-sm font-semibold bg-gradient-to-r from-rose-500 to-amber-500 text-white shadow-lg shadow-rose-500/20 hover:opacity-95 transition"
-                    >
-                      Generate {noteType.charAt(0).toUpperCase() + noteType.slice(1)} Notes
-                    </button>
-                    <button
-                      onClick={handleExtractTasks}
-                      className="py-2.5 px-4 rounded-xl text-sm font-semibold bg-slate-800 hover:bg-slate-700 text-slate-200 border border-white/10 transition"
-                    >
-                      Extract Action Items
-                    </button>
-                  </div>
-                  {frames.length > 0 && (
-                    <p className="text-xs text-slate-400">
-                      🖼️ {frames.length} visual items detected. Open Multimedia tab to inspect.
-                    </p>
-                  )}
-                </div>
+                ))}
               </div>
-            </div>
 
-            {/* Generated Notes Display */}
-            {currentNote && (
-              <div className="bg-slate-900/60 backdrop-blur-md p-6 rounded-2xl border border-white/10 mt-6">
-                <h2 className="text-2xl font-bold text-slate-100 mb-4">{currentNote.title}</h2>
-                {renderNoteDetails(currentNote.content)}
-              </div>
-            )}
-          </div>
-        )}
+              {/* Upload & Transcription Section */}
+              <div className="grid grid-cols-2 gap-6">
+                {/* Upload Card */}
+                <div className="bg-slate-900/40 border border-slate-800/80 rounded-2xl p-6 backdrop-blur-md flex flex-col justify-between">
+                  <div className="space-y-4">
+                    <div className="border border-dashed border-slate-700/60 rounded-xl p-8 flex flex-col items-center justify-center bg-slate-950/20 hover:border-slate-600 transition-all">
+                      <span className="text-3xl text-rose-500 mb-2">⬆️</span>
+                      <h4 className="font-semibold text-sm text-slate-200">Upload Audio or Video</h4>
+                      <p className="text-xs text-slate-500 mt-1">MP3, WAV, M4A, MP4, MOV, WEBM</p>
+                      <input
+                        type="file"
+                        id="mediaFile"
+                        className="hidden"
+                        onChange={(e) => {
+                          setFile(e.target.files[0]);
+                          setMedia(null);
+                        }}
+                      />
+                      <label
+                        htmlFor="mediaFile"
+                        className="mt-4 px-4 py-1.5 rounded-lg bg-slate-800 hover:bg-slate-700 text-xs font-semibold text-slate-300 border border-slate-700 cursor-pointer transition-all"
+                      >
+                        {file ? file.name : "Choose File"}
+                      </label>
+                    </div>
 
-        {/* My Notes View */}
-        {activeTab === "My Notes" && (
-          <div className="space-y-4">
-            <h2 className="text-2xl font-bold text-slate-100">Saved Notes</h2>
-            <div className="grid grid-cols-3 gap-4">
-              {allNotes.map((n) => (
-                <div
-                  key={n.id}
-                  onClick={() => {
-                    setCurrentNote(n);
-                    setActiveTab("Home");
-                  }}
-                  className="bg-slate-900/60 p-5 rounded-2xl border border-white/10 hover:border-rose-500/40 cursor-pointer transition space-y-2"
-                >
-                  <span className="text-xs font-semibold px-2 py-0.5 rounded-md bg-rose-500/20 text-rose-300">
-                    {n.note_type}
-                  </span>
-                  <h3 className="font-bold text-slate-200 line-clamp-1">{n.title}</h3>
-                  <p className="text-xs text-slate-500">{n.created_at ? new Date(n.created_at).toLocaleDateString() : ""}</p>
-                </div>
-              ))}
-            </div>
-          </div>
-        )}
+                    <div className="grid grid-cols-2 gap-4">
+                      <div>
+                        <label className="text-xs font-semibold text-slate-400 block mb-1">Transcription Language</label>
+                        <select
+                          value={transcriptionLang}
+                          onChange={(e) => setTranscriptionLang(e.target.value)}
+                          className="w-full bg-slate-950/80 border border-slate-800 rounded-lg p-2 text-xs text-slate-300 outline-none focus:border-rose-500/50"
+                        >
+                          <option value="auto">Auto detect</option>
+                          <option value="en">English</option>
+                          <option value="es">Spanish</option>
+                          <option value="fr">French</option>
+                          <option value="de">German</option>
+                          <option value="hi">Hindi</option>
+                        </select>
+                      </div>
 
-        {/* Chat with Notes View */}
-        {activeTab === "Chat with Notes" && (
-          <div className="bg-slate-900/60 p-6 rounded-2xl border border-white/10 h-[calc(100vh-12rem)] flex flex-col justify-between">
-            <div className="overflow-y-auto space-y-4 pr-2">
-              {!currentNote ? (
-                <p className="text-sm text-slate-500">Please generate or select a note from "My Notes" first to chat.</p>
-              ) : (
-                chatHistory.map((msg, i) => (
-                  <div key={i} className={`flex ${msg.sender === "user" ? "justify-end" : "justify-start"}`}>
-                    <div className={`max-w-xl p-3.5 rounded-2xl text-sm ${
-                      msg.sender === "user" ? "bg-rose-600 text-white" : "bg-slate-800 text-slate-200 border border-white/10"
-                    }`}>
-                      <b>{msg.sender === "user" ? "You: " : "AI: "}</b>
-                      {msg.text}
+                      <div>
+                        <label className="text-xs font-semibold text-slate-400 block mb-1">Note Language</label>
+                        <select
+                          value={noteLanguage}
+                          onChange={(e) => setNoteLanguage(e.target.value)}
+                          className="w-full bg-slate-950/80 border border-slate-800 rounded-lg p-2 text-xs text-slate-300 outline-none focus:border-rose-500/50"
+                        >
+                          <option value="en">English</option>
+                          <option value="es">Spanish</option>
+                          <option value="fr">French</option>
+                          <option value="de">German</option>
+                          <option value="hi">Hindi</option>
+                        </select>
+                      </div>
                     </div>
                   </div>
-                ))
-              )}
-            </div>
-            <form onSubmit={handleChat} className="flex space-x-3 pt-4 border-t border-white/10">
-              <input
-                type="text"
-                placeholder="Ask questions about your notes..."
-                value={chatQuestion}
-                onChange={(e) => setChatQuestion(e.target.value)}
-                className="flex-1 bg-slate-950 border border-white/10 rounded-xl px-4 py-2.5 text-sm text-slate-200 focus:outline-none focus:border-rose-500/50"
-              />
-              <button type="submit" className="px-6 py-2.5 bg-rose-600 hover:bg-rose-500 text-white rounded-xl text-sm font-semibold transition">
-                Send
-              </button>
-            </form>
-          </div>
-        )}
 
-        {/* Tasks & Reminders View */}
-        {activeTab === "Tasks & Reminders" && (
-          <div className="space-y-4">
-            <h2 className="text-2xl font-bold text-slate-100">Action Items &amp; Commitments</h2>
-            <div className="space-y-3">
-              {tasks.length === 0 ? (
-                <p className="text-sm text-slate-500">No action items extracted yet. Run "Extract Action Items" in the transcript tab.</p>
-              ) : (
-                tasks.map((t) => (
-                  <div key={t.id} className="bg-slate-900/60 p-4 rounded-xl border border-white/10 flex justify-between items-center">
-                    <div>
-                      <h4 className="font-semibold text-slate-200">{t.title}</h4>
-                      <p className="text-xs text-slate-400 mt-1">{t.description}</p>
-                    </div>
-                    <span className="text-xs font-semibold px-2.5 py-1 rounded-md bg-amber-500/20 text-amber-300 border border-amber-500/30">
-                      {t.priority}
-                    </span>
+                  <div className="flex gap-3 mt-6">
+                    <button
+                      onClick={isRecording ? stopRecording : startRecording}
+                      className={`flex-1 py-2 px-3 rounded-xl border text-xs font-semibold transition-all flex items-center justify-center gap-2 ${
+                        isRecording
+                          ? "bg-rose-500/20 border-rose-500 text-rose-400 animate-pulse"
+                          : "bg-slate-800/80 hover:bg-slate-700/80 border-slate-700 text-slate-300"
+                      }`}
+                    >
+                      <span className="h-2 w-2 rounded-full bg-rose-500"></span>
+                      {isRecording ? "Stop Recording" : "Record Audio"}
+                    </button>
+
+                    <button
+                      onClick={async () => {
+                        if (!media) await upload();
+                        transcribe();
+                      }}
+                      className="flex-1 py-2 px-3 rounded-xl bg-gradient-to-r from-rose-500 to-rose-600 hover:from-rose-600 hover:to-rose-700 text-white font-semibold text-xs shadow-md shadow-rose-950/20 transition-all flex items-center justify-center gap-1.5"
+                    >
+                      ▶️ Transcribe Again
+                    </button>
                   </div>
-                ))
-              )}
-            </div>
-          </div>
-        )}
+                </div>
 
-        {/* Multimedia Frames View */}
-        {activeTab === "Multimedia" && (
-          <div className="space-y-4">
-            <h2 className="text-2xl font-bold text-slate-100">Visual Keyframe Detections</h2>
-            <div className="grid grid-cols-2 gap-4">
-              {frames.length === 0 ? (
-                <p className="text-sm text-slate-500">No video keyframes detected yet.</p>
-              ) : (
-                frames.map((f, i) => (
-                  <div key={i} className="bg-slate-900/60 p-4 rounded-xl border border-white/10 space-y-2">
-                    <h4 className="font-semibold text-slate-200">{f.analysis?.title || f.filename}</h4>
-                    <p className="text-xs text-slate-400">{f.analysis?.description}</p>
-                    {f.analysis?.extracted_text && (
-                      <pre className="text-xs bg-slate-950 p-2.5 rounded-lg border border-white/10 overflow-x-auto text-amber-200/90 font-mono">
-                        {f.analysis.extracted_text}
-                      </pre>
+                {/* Transcript Card */}
+                <div className="bg-slate-900/40 border border-slate-800/80 rounded-2xl p-6 backdrop-blur-md flex flex-col justify-between">
+                  <div>
+                    <div className="flex justify-between items-center mb-2">
+                      <h4 className="font-semibold text-sm text-slate-200">Transcript</h4>
+                      <span className="text-xs bg-slate-800/80 text-slate-400 px-2 py-0.5 rounded-full border border-slate-700/50 uppercase">
+                        {noteType} mode
+                      </span>
+                    </div>
+
+                    <textarea
+                      value={transcript}
+                      onChange={(e) => setTranscript(e.target.value)}
+                      placeholder="Your transcript will appear here after transcription. You can also paste transcript text for testing."
+                      className="w-full h-48 bg-slate-950/60 border border-slate-800/80 rounded-xl p-3 text-xs text-slate-300 outline-none focus:border-rose-500/50 resize-none font-mono"
+                    />
+                  </div>
+
+                  <div className="space-y-3 mt-4">
+                    <div className="flex gap-3">
+                      <button
+                        onClick={generate}
+                        className="flex-1 py-2.5 px-4 rounded-xl bg-gradient-to-r from-rose-500 to-rose-600 hover:from-rose-600 hover:to-rose-700 text-white font-semibold text-xs shadow-md shadow-rose-950/20 transition-all"
+                      >
+                        Generate {noteType.charAt(0).toUpperCase() + noteType.slice(1)} Notes
+                      </button>
+
+                      <button
+                        onClick={extractTasks}
+                        className="py-2.5 px-4 rounded-xl bg-slate-800 hover:bg-slate-700 text-slate-300 text-xs font-semibold border border-slate-700 transition-all"
+                      >
+                        Extract Action Items
+                      </button>
+                    </div>
+
+                    {frames.length > 0 && (
+                      <p className="text-xs text-slate-500 flex items-center gap-1.5">
+                        🖼️ {frames.length} visual items detected. Open Multimedia to view them.
+                      </p>
                     )}
                   </div>
-                ))
-              )}
-            </div>
-          </div>
-        )}
-
-        {/* Export View */}
-        {activeTab === "Export" && (
-          <div className="bg-slate-900/60 p-6 rounded-2xl border border-white/10 space-y-4">
-            <h2 className="text-2xl font-bold text-slate-100">Export Note</h2>
-            {!currentNote ? (
-              <p className="text-sm text-slate-500">Please generate or select a note first to enable downloads.</p>
-            ) : (
-              <div className="space-y-3">
-                <p className="text-sm text-slate-300">Choose export format for <b>{currentNote.title}</b>:</p>
-                <div className="flex space-x-3">
-                  {["pdf", "docx", "txt", "json"].map((fmt) => (
-                    <a
-                      key={fmt}
-                      href={`${API_BASE}/export/${currentNote.id}/${fmt}`}
-                      target="_blank"
-                      rel="noreferrer"
-                      className="px-5 py-2.5 bg-slate-800 hover:bg-slate-700 text-slate-200 rounded-xl text-sm font-semibold border border-white/10 uppercase transition"
-                    >
-                      {fmt}
-                    </a>
-                  ))}
                 </div>
               </div>
-            )}
-          </div>
-        )}
+
+              {/* Note Display Card */}
+              {currentNote && (
+                <div className="bg-slate-900/40 border border-slate-800/80 rounded-2xl p-6 backdrop-blur-md space-y-4">
+                  <div className="flex justify-between items-center pb-4 border-b border-slate-800/60">
+                    <div>
+                      <span className="text-xs font-bold text-rose-500 tracking-wider uppercase">
+                        {currentNote.note_type}
+                      </span>
+                      <h2 className="text-xl font-bold text-slate-100 mt-1">{currentNote.title}</h2>
+                    </div>
+
+                    <div className="flex gap-2">
+                      {["es", "fr", "de", "hi"].map((lang) => (
+                        <button
+                          key={lang}
+                          onClick={() => translate(lang)}
+                          className="px-2.5 py-1 rounded bg-slate-800 hover:bg-slate-700 text-slate-300 text-xs uppercase font-medium border border-slate-700"
+                        >
+                          {lang}
+                        </button>
+                      ))}
+                    </div>
+                  </div>
+
+                  <div className="space-y-4">
+                    {Object.entries(currentNote.content).map(([k, val]) => (
+                      <div key={k} className="space-y-1">
+                        <h4 className="text-xs font-semibold text-slate-400 uppercase tracking-wider">
+                          {currentNote.labels?.[k] || k}
+                        </h4>
+                        {Array.isArray(val) ? (
+                          <ul className="list-disc list-inside text-xs text-slate-300 space-y-1 pl-1">
+                            {val.map((item, idx) => (
+                              <li key={idx}>
+                                {typeof item === "object" ? JSON.stringify(item) : item}
+                              </li>
+                            ))}
+                          </ul>
+                        ) : (
+                          <p className="text-xs text-slate-300 leading-relaxed whitespace-pre-wrap">{val}</p>
+                        )}
+                      </div>
+                    ))}
+                  </div>
+                </div>
+              )}
+            </div>
+          ) : activeTab === "My Notes" ? (
+            <div className="space-y-4">
+              <h2 className="text-lg font-bold text-slate-100">Saved Notes</h2>
+              <div className="grid grid-cols-3 gap-4">
+                {allNotes.map((n) => (
+                  <div
+                    key={n.id}
+                    onClick={() => {
+                      setCurrentNote(n);
+                      setActiveTab("Home");
+                    }}
+                    className="p-4 rounded-xl bg-slate-900/40 border border-slate-800 hover:border-rose-500/40 cursor-pointer transition-all space-y-2"
+                  >
+                    <span className="text-xs font-bold text-rose-500 uppercase">{n.note_type}</span>
+                    <h3 className="font-semibold text-sm text-slate-200 line-clamp-1">{n.title}</h3>
+                    <p className="text-xs text-slate-500">{n.created_at ? new Date(n.created_at).toLocaleDateString() : ""}</p>
+                  </div>
+                ))}
+              </div>
+            </div>
+          ) : activeTab === "Chat with Notes" ? (
+            <div className="bg-slate-900/40 border border-slate-800/80 rounded-2xl p-6 backdrop-blur-md flex flex-col h-[550px]">
+              <div className="flex-1 overflow-y-auto space-y-3 pr-2">
+                {!currentNote ? (
+                  <p className="text-xs text-slate-500 text-center mt-20">Select or generate a note to start chatting.</p>
+                ) : (
+                  chatHistory.map((msg, i) => (
+                    <div key={i} className={`flex ${msg.role === "user" ? "justify-end" : "justify-start"}`}>
+                      <div className={`p-3 rounded-xl text-xs max-w-md leading-relaxed ${
+                        msg.role === "user"
+                          ? "bg-rose-500/20 border border-rose-500/30 text-rose-200"
+                          : "bg-slate-800/80 border border-slate-700/60 text-slate-300"
+                      }`}>
+                        {msg.text}
+                      </div>
+                    </div>
+                  ))
+                )}
+              </div>
+
+              <form onSubmit={askQuestion} className="flex gap-2 mt-4 pt-3 border-t border-slate-800/60">
+                <input
+                  type="text"
+                  placeholder="Ask a question about the current note..."
+                  value={chatQuestion}
+                  onChange={(e) => setChatQuestion(e.target.value)}
+                  className="flex-1 bg-slate-950/80 border border-slate-800 rounded-xl px-4 py-2 text-xs text-slate-300 outline-none focus:border-rose-500/50"
+                />
+                <button
+                  type="submit"
+                  className="px-4 py-2 bg-gradient-to-r from-rose-500 to-rose-600 hover:from-rose-600 hover:to-rose-700 text-white rounded-xl text-xs font-semibold shadow-md shadow-rose-950/20"
+                >
+                  Send
+                </button>
+              </form>
+            </div>
+          ) : activeTab === "Tasks & Reminders" ? (
+            <div className="space-y-4">
+              <h2 className="text-lg font-bold text-slate-100">Extracted Action Items</h2>
+              <div className="space-y-3">
+                {tasks.length === 0 ? (
+                  <p className="text-xs text-slate-500">No tasks extracted yet. Click "Extract Action Items" on a transcript.</p>
+                ) : (
+                  tasks.map((t) => (
+                    <div key={t.id} className="p-4 bg-slate-900/40 border border-slate-800 rounded-xl flex justify-between items-center">
+                      <div>
+                        <h4 className="font-semibold text-sm text-slate-200">{t.title}</h4>
+                        <p className="text-xs text-slate-400 mt-0.5">{t.description}</p>
+                      </div>
+                      <span className="text-xs px-2.5 py-1 rounded bg-slate-800 text-rose-400 border border-slate-700">
+                        {t.priority}
+                      </span>
+                    </div>
+                  ))
+                )}
+              </div>
+            </div>
+          ) : activeTab === "Multimedia" ? (
+            <div className="space-y-4">
+              <h2 className="text-lg font-bold text-slate-100">Extracted Visual Frames</h2>
+              <div className="grid grid-cols-2 gap-4">
+                {frames.length === 0 ? (
+                  <p className="text-xs text-slate-500">No frames extracted. Upload and transcribe a video file to see keyframes.</p>
+                ) : (
+                  frames.map((f, i) => (
+                    <div key={i} className="p-4 bg-slate-900/40 border border-slate-800 rounded-xl space-y-2">
+                      <h4 className="font-semibold text-sm text-slate-200">{f.analysis?.title || f.filename}</h4>
+                      <p className="text-xs text-slate-400">{f.analysis?.description}</p>
+                      {f.analysis?.extracted_text && (
+                        <pre className="text-xs bg-slate-950 p-2 rounded border border-slate-800 text-slate-400 overflow-x-auto font-mono">
+                          {f.analysis.extracted_text}
+                        </pre>
+                      )}
+                    </div>
+                  ))
+                )}
+              </div>
+            </div>
+          ) : activeTab === "Export" ? (
+            <div className="p-6 bg-slate-900/40 border border-slate-800 rounded-xl space-y-4 max-w-lg">
+              <h2 className="text-lg font-bold text-slate-100">Export Note</h2>
+              {!currentNote ? (
+                <p className="text-xs text-slate-500">Generate or select a note to export.</p>
+              ) : (
+                <div className="space-y-4">
+                  <p className="text-xs text-slate-300">Export <strong>{currentNote.title}</strong>:</p>
+                  <div className="flex gap-2">
+                    {["pdf", "docx", "txt", "json"].map((fmt) => (
+                      <a
+                        key={fmt}
+                        href={`${API_BASE}/export/${currentNote.id}/${fmt}`}
+                        target="_blank"
+                        rel="noreferrer"
+                        className="px-4 py-2 bg-slate-800 hover:bg-slate-700 text-white rounded-lg text-xs font-semibold uppercase border border-slate-700"
+                      >
+                        {fmt}
+                      </a>
+                    ))}
+                  </div>
+                </div>
+              )}
+            </div>
+          ) : activeTab === "Collab" ? (
+            <div className="bg-slate-900/40 border border-slate-800/80 rounded-2xl p-6 backdrop-blur-md space-y-4 max-w-xl">
+              <h2 className="text-lg font-bold text-slate-100">Real-Time Team Collaboration</h2>
+
+              <div className="space-y-3">
+                <div className="flex gap-2">
+                  <input
+                    type="text"
+                    placeholder="Your Name"
+                    value={userName}
+                    onChange={(e) => setUserName(e.target.value)}
+                    className="flex-1 bg-slate-950 border border-slate-800 rounded-xl px-3 py-2 text-xs text-slate-300"
+                  />
+                  <button
+                    onClick={createRoom}
+                    className="px-4 py-2 bg-rose-500 hover:bg-rose-600 text-white rounded-xl text-xs font-semibold"
+                  >
+                    Create Room
+                  </button>
+                </div>
+
+                <div className="flex gap-2">
+                  <input
+                    type="text"
+                    placeholder="Room ID"
+                    value={roomId}
+                    onChange={(e) => setRoomId(e.target.value)}
+                    className="flex-1 bg-slate-950 border border-slate-800 rounded-xl px-3 py-2 text-xs text-slate-300"
+                  />
+                  <button
+                    onClick={() => joinRoom(roomId)}
+                    className="px-4 py-2 bg-slate-800 hover:bg-slate-700 text-white rounded-xl text-xs font-semibold border border-slate-700"
+                  >
+                    Join
+                  </button>
+                </div>
+
+                {connectedRoom && (
+                  <div className="mt-4 p-4 border border-slate-800 rounded-xl space-y-3 bg-slate-950/40">
+                    <div className="flex justify-between items-center">
+                      <span className="text-xs text-slate-400">Connected Room: <strong>{connectedRoom}</strong></span>
+                      <button
+                        onClick={toggleVoice}
+                        className={`px-3 py-1.5 rounded-lg text-xs font-semibold ${
+                          voiceActive ? "bg-rose-500 text-white animate-pulse" : "bg-slate-800 text-slate-300"
+                        }`}
+                      >
+                        {voiceActive ? "Mute Voice" : "Enable Voice Chat"}
+                      </button>
+                    </div>
+
+                    <div className="text-xs text-slate-400">
+                      Users: {roomUsers.map((u) => u.user_name).join(", ")}
+                    </div>
+
+                    <div className="h-40 overflow-y-auto space-y-2 border border-slate-800 p-2 rounded-lg bg-slate-950/60 text-xs">
+                      {roomMessages.map((m, i) => (
+                        <div key={i}>
+                          <strong className="text-rose-400">{m.user}: </strong>
+                          <span className="text-slate-300">{m.text}</span>
+                        </div>
+                      ))}
+                    </div>
+
+                    <form onSubmit={sendRoomMessage} className="flex gap-2">
+                      <input
+                        type="text"
+                        placeholder="Say something to room..."
+                        value={roomInput}
+                        onChange={(e) => setRoomInput(e.target.value)}
+                        className="flex-1 bg-slate-950 border border-slate-800 rounded-lg px-3 py-1.5 text-xs text-slate-300"
+                      />
+                      <button type="submit" className="px-3 py-1.5 bg-slate-800 text-white rounded-lg text-xs">Send</button>
+                    </form>
+                  </div>
+                )}
+              </div>
+            </div>
+          ) : null}
+        </div>
       </main>
     </div>
   );
