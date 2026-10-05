@@ -2,7 +2,7 @@ import React, { useState, useEffect, useRef } from "react";
 import ReactDOM from "react-dom/client";
 import "./styles.css";
 
-const API_BASE = import.meta.env.VITE_API_URL || "https://ai-smart-transcription-platform.onrender.com/api";
+const API_BASE = "http://localhost:8000/api";
 
 function App() {
   const [activeTab, setActiveTab] = useState("Home");
@@ -136,7 +136,6 @@ function App() {
           media_id: media.id,
           note_type: noteType,
           note_language: noteLanguage,
-          transcript: transcript ? transcript.trim() : "",
         }),
       });
       if (!res.ok) {
@@ -268,9 +267,7 @@ function App() {
 
     if (wsRef.current) wsRef.current.close();
 
-    const host = API_BASE.replace(/^https?:\/\//, "").replace(/\/api$/, "");
-    const protocol = window.location.protocol === "https:" ? "wss:" : "ws:";
-    const wsUrl = `${protocol}//${host}/api/collaboration/${targetRoom.trim()}`;
+    const wsUrl = `ws://localhost:8000/api/collaboration/${targetRoom.trim()}`;
     const ws = new WebSocket(wsUrl);
 
     ws.onopen = () => {
