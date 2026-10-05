@@ -1,70 +1,134 @@
-import os
-import re
+import time
 from google import genai
+
 from app.config import settings
 
-def parse_time(time_str: str) -> float:
-    parts = [float(p) for p in time_str.split(":")]
-    if len(parts) == 3:
-        return parts[0] * 3600 + parts[1] * 60 + parts[2]
-    elif len(parts) == 2:
-        return parts[0] * 60 + parts[1]
-    return 0.0
 
-def transcribe(audio_path: str, language: str | None = None):
-    client = genai.Client(api_key=settings.gemini_api_key)
-    
-    # Upload audio file to Gemini File API
-    audio_file = client.files.upload(file=audio_path)
-    
-    prompt = (
-        "Transcribe this audio verbatim. "
-        "Provide timestamped segments in this exact line format:\n"
-        "[00:00 - 00:05] Transcribed text here\n"
-        "Do not include markdown codeblocks or extra conversation."
-    )
-    if language and language != "auto":
-        prompt += f" The speech language is {language}."
+def get_client():
+    """
+    Create a Gemini client using the API key from settings.
+    """
+    if not settings.gemini_api_key:
+        raise RuntimeError("GEMINI_API_KEY is not configured.")
 
-    model_name = settings.gemini_model or "gemini-3.5-flash"
+    return genai.Client(api_key=settings.gemini_api_key)
+
+
+def _generate_with_retry(client, model, contents, max_retries=3):
+    """
+    Call Gemini with automatic retry for temporary 503/UNAVAILABLE errors.
+    """
+
+    last_error = None
+
+    for attempt in range(max_retries):
+        try:
+            return client.models.generate_content(
+                model=model,
+                contents=contents
+            )
+
+        except Exception as exc:
+            last_error = exc
+            error_text = str(exc)
+
+            is_temporary = (
+                "503" in error_text
+                or "UNAVAILABLE" in error_text
+                or "temporarily" in error_text.lower()
+                or "high demand" in error_text.lower()
+            )
+
+            if not is_temporary or attempt == max_retries - 1:
+                raise
+
+            wait_seconds = 2 ** attempt
+            time.sleep(wait_seconds)
+
+    raise last_error
+
+
+def transcribe(
+    audio_path: str,
+    language: str | None = None
+):
+    """
+    Transcribe an audio file using Gemini File API.
+
+    No Whisper/PyTorch model is loaded locally.
+    """
+
+    client = get_client()
+    audio_file = None
 
     try:
-        response = client.models.generate_content(
-            model=model_name,
-            contents=[audio_file, prompt]
+        # Upload audio to Gemini File API.
+        audio_file = client.files.upload(
+            file=audio_path
         )
-    finally:
-        # Delete audio file from Gemini File API
-        try:
-            client.files.delete(name=audio_file.name)
-        except Exception:
-            pass
 
-    full_text = response.text or ""
-    
-    # Parse timestamps
-    segments = []
-    text_chunks = []
-    pattern = re.compile(r"\[(\d+:\d+(?::\d+)?)\s*-\s*(\d+:\d+(?::\d+)?)\]\s*(.*)")
-
-    for line in full_text.splitlines():
-        line = line.strip()
-        if not line:
-            continue
-        match = pattern.match(line)
-        if match:
-            start_s = parse_time(match.group(1))
-            end_s = parse_time(match.group(2))
-            clean_text = match.group(3).strip()
-            segments.append({"start": start_s, "end": end_s, "text": clean_text})
-            text_chunks.append(clean_text)
+        if language:
+            language_instruction = (
+                f"The spoken language is expected to be {language}. "
+                f"Transcribe it accurately in that language."
+            )
         else:
-            segments.append({"start": 0.0, "end": 0.0, "text": line})
-            text_chunks.append(line)
+            language_instruction = (
+                "Automatically detect the spoken language and "
+                "transcribe it accurately."
+            )
 
-    return {
-        "language": language or "en",
-        "language_probability": 1.0,
-        "segments": segments,
-        "text": " ".join(text_chunks) if text_chunks else full_text
-    }
+        prompt = f"""
+You are a professional speech-to-text transcription system.
+
+{language_instruction}
+
+Transcribe the COMPLETE audio.
+
+Rules:
+1. Return only the transcription.
+2. Do not summarize.
+3. Do not explain the content.
+4. Do not add information that was not spoken.
+5. Do not omit important spoken content.
+6. Preserve the original meaning.
+7. Keep the transcription readable.
+8. If multiple people speak, preserve the spoken content in sequence.
+9. Do not generate notes.
+10. Do not generate headings unless they were actually spoken.
+
+Return only the transcript.
+"""
+
+        response = _generate_with_retry(
+            client=client,
+            model=settings.gemini_model,
+            contents=[
+                audio_file,
+                prompt
+            ]
+        )
+
+        text = (response.text or "").strip()
+
+        if not text:
+            raise RuntimeError(
+                "Gemini returned an empty transcription."
+            )
+
+        return {
+            "language": language or "auto",
+            "language_probability": 1.0,
+            "segments": [],
+            "text": text
+        }
+
+    finally:
+        # Delete the remote Gemini File immediately.
+        if audio_file is not None:
+            try:
+                client.files.delete(
+                    name=audio_file.name
+                )
+            except Exception:
+                pass
