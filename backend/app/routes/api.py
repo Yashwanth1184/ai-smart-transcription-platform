@@ -31,7 +31,6 @@ from app.services import exporter
 from app.services.media import extract_audio, extract_frames, is_video
 from app.services.transcription import transcribe
 
-# Safe import for calendar functions to prevent startup crashes
 try:
     from app.services import calendar_service
     if hasattr(calendar_service, "get_calendar_auth_url"):
@@ -47,36 +46,22 @@ except Exception:
 
 router = APIRouter(prefix="/api")
 
-
-# ============================================================================
-# Pydantic Schemas
-# ============================================================================
-
 class GenerateNotesRequest(BaseModel):
-    media_id: Optional[int] = None
+    media_id: int
     note_type: str = "summary"
     note_language: str = "en"
-    transcript: Optional[str] = None
-
 
 class TranslateNoteRequest(BaseModel):
     target_language: str
-
 
 class ChatRequest(BaseModel):
     note_id: int
     question: str
 
-
 class CreateReminderRequest(BaseModel):
     task_id: int
     remind_at: str
     add_to_calendar: bool = False
-
-
-# ============================================================================
-# Media & Upload Endpoints
-# ============================================================================
 
 @router.post("/upload")
 async def upload_media(
@@ -94,38 +79,22 @@ async def upload_media(
     media_type = "video" if is_video(destination) else "audio"
     orig_name = file.filename or unique_filename
 
-    media = Media()
-    if hasattr(media, "file_path"):
-        media.file_path = destination
-    if hasattr(media, "media_type"):
-        media.media_type = media_type
-    if hasattr(media, "original_name"):
-        media.original_name = orig_name
-    if hasattr(media, "filename"):
-        media.filename = orig_name
-    if hasattr(media, "status"):
-        media.status = "uploaded"
-    if hasattr(media, "transcript"):
-        media.transcript = ""
-
+    media = Media(
+        file_path=destination,
+        media_type=media_type,
+        original_name=orig_name,
+        status="uploaded",
+    )
     db.add(media)
     db.commit()
     db.refresh(media)
-
-    created_iso = None
-    if hasattr(media, "created_at") and getattr(media, "created_at", None):
-        try:
-            created_iso = media.created_at.isoformat()
-        except Exception:
-            pass
 
     return {
         "id": media.id,
         "filename": orig_name,
         "media_type": media_type,
-        "created_at": created_iso,
+        "created_at": media.created_at.isoformat() if media.created_at else None,
     }
-
 
 @router.post("/transcribe/{media_id}")
 def transcribe_media(
@@ -151,8 +120,7 @@ def transcribe_media(
         )
 
     media.transcript = result.get("text", "")
-    if hasattr(media, "status"):
-        media.status = "transcribed"
+    media.status = "transcribed"
     db.commit()
 
     return {
@@ -161,11 +129,6 @@ def transcribe_media(
         "language": result.get("language", "en"),
         "segments": result.get("segments", []),
     }
-
-
-# ============================================================================
-# Multimedia Analysis (Optimized for Render Free Tier)
-# ============================================================================
 
 @router.post("/media/extract-frames/{media_id}")
 def extract_media_frames(
@@ -225,72 +188,35 @@ def extract_media_frames(
 
     return {"media_id": media.id, "frames": results}
 
-
-# ============================================================================
-# Notes Generation & Chat
-# ============================================================================
-
 @router.post("/generate-notes")
 def api_generate_notes(
     req: GenerateNotesRequest,
     db: Session = Depends(get_db),
 ):
-    # 1. Resolve media record (by ID or fallback to latest record)
-    media = None
-    if req.media_id:
-        media = db.query(Media).filter(Media.id == req.media_id).first()
-    if not media:
-        media = db.query(Media).order_by(Media.id.desc()).first()
-
-    # 2. Extract transcript from frontend request first, then fallback to database
-    transcript_text = (req.transcript or "").strip()
-    if not transcript_text and media:
-        transcript_text = (media.transcript or "").strip()
-
-    if not transcript_text:
+    media = db.query(Media).filter(Media.id == req.media_id).first()
+    if not media or not media.transcript:
         raise HTTPException(
             status_code=400,
             detail="Valid transcript is required before generating notes.",
         )
 
-    # 3. Ensure a Media record exists and save the transcript text
-    if not media:
-        media = Media()
-        if hasattr(media, "original_name"):
-            media.original_name = "transcript_session"
-        if hasattr(media, "filename"):
-            media.filename = "transcript_session"
-        if hasattr(media, "file_path"):
-            media.file_path = "storage/session"
-        if hasattr(media, "media_type"):
-            media.media_type = "text"
-        if hasattr(media, "status"):
-            media.status = "transcribed"
-        if hasattr(media, "transcript"):
-            media.transcript = transcript_text
-        db.add(media)
-        db.commit()
-        db.refresh(media)
-    else:
-        if hasattr(media, "transcript") and media.transcript != transcript_text:
-            media.transcript = transcript_text
-            db.commit()
-
-    # 4. Generate structured notes using Gemini
     try:
         try:
             content, labels = generate_notes(
-                transcript=transcript_text,
+                transcript=media.transcript,
                 note_type=req.note_type,
                 language=req.note_language,
             )
         except TypeError:
             content, labels = generate_notes(
-                transcript=transcript_text,
+                transcript=media.transcript,
                 note_type=req.note_type,
             )
     except Exception as e:
-        raise HTTPException(status_code=500, detail=f"AI note generation failed: {str(e)}")
+        raise HTTPException(
+            status_code=500,
+            detail=f"AI note generation failed: {str(e)}",
+        )
 
     note = Note(
         media_id=media.id,
@@ -312,7 +238,6 @@ def api_generate_notes(
         "content": content,
         "labels": labels,
     }
-
 
 @router.post("/notes/{note_id}/translate")
 def api_translate_note(
@@ -349,7 +274,6 @@ def api_translate_note(
         "labels": labels,
     }
 
-
 @router.get("/notes")
 def list_notes(db: Session = Depends(get_db)):
     notes = db.query(Note).order_by(Note.created_at.desc()).all()
@@ -365,7 +289,6 @@ def list_notes(db: Session = Depends(get_db)):
             "created_at": n.created_at.isoformat() if n.created_at else None,
         })
     return out
-
 
 @router.post("/chat")
 def api_chat(
@@ -383,11 +306,6 @@ def api_chat(
         raise HTTPException(status_code=500, detail=f"Chat failed: {str(e)}")
 
     return {"answer": answer}
-
-
-# ============================================================================
-# Tasks & Reminders
-# ============================================================================
 
 @router.post("/tasks/extract/{media_id}")
 def api_extract_tasks(
@@ -419,7 +337,6 @@ def api_extract_tasks(
 
     return {"count": len(created)}
 
-
 @router.get("/tasks")
 def list_tasks(db: Session = Depends(get_db)):
     tasks = db.query(Task).order_by(Task.id.desc()).all()
@@ -435,7 +352,6 @@ def list_tasks(db: Session = Depends(get_db)):
         }
         for t in tasks
     ]
-
 
 @router.post("/reminders")
 def create_reminder(
@@ -456,7 +372,6 @@ def create_reminder(
     db.refresh(r)
     return {"id": r.id, "status": "scheduled"}
 
-
 @router.get("/calendar/auth")
 def calendar_auth():
     url = None
@@ -468,11 +383,6 @@ def calendar_auth():
     if not url:
         return {"authorization_url": "https://accounts.google.com/o/oauth2/v2/auth"}
     return {"authorization_url": url}
-
-
-# ============================================================================
-# Exports (Format-safe dispatcher using exporter module)
-# ============================================================================
 
 @router.get("/export/{note_id}/{format}")
 def api_export_note(
@@ -516,11 +426,6 @@ def api_export_note(
         raise
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"Export failed: {str(e)}")
-
-
-# ============================================================================
-# Collaboration (Rooms & WebRTC / WebSocket Signaling)
-# ============================================================================
 
 class CollaborationManager:
     def __init__(self):
@@ -579,15 +484,12 @@ class CollaborationManager:
             except Exception:
                 pass
 
-
 manager = CollaborationManager()
-
 
 @router.post("/collaboration/rooms")
 def create_room():
     room_id = uuid.uuid4().hex[:6].upper()
     return {"room_id": room_id}
-
 
 @router.websocket("/collaboration/{room_id}")
 async def collaboration_ws(websocket: WebSocket, room_id: str):
