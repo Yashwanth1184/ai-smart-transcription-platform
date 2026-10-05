@@ -1,5 +1,4 @@
 import os
-import re
 import shutil
 import subprocess
 import tempfile
@@ -9,13 +8,17 @@ import cv2
 import imageio_ffmpeg
 
 
+# ============================================================
+# SUPPORTED FORMATS
+# ============================================================
+
 VIDEO_EXT = {
     ".mp4",
     ".mov",
     ".webm",
     ".mkv",
     ".avi",
-    ".m4v"
+    ".m4v",
 }
 
 AUDIO_EXT = {
@@ -25,33 +28,51 @@ AUDIO_EXT = {
     ".aac",
     ".flac",
     ".ogg",
-    ".webm"
+    ".webm",
 }
 
+
+# ============================================================
+# FILE TYPE CHECKS
+# ============================================================
 
 def is_video(path: str) -> bool:
     """
     Check whether a file is a supported video.
     """
-    return Path(path).suffix.lower() in VIDEO_EXT
+
+    return (
+        Path(path).suffix.lower()
+        in VIDEO_EXT
+    )
 
 
 def is_audio(path: str) -> bool:
     """
     Check whether a file is a supported audio file.
     """
-    return Path(path).suffix.lower() in AUDIO_EXT
 
+    return (
+        Path(path).suffix.lower()
+        in AUDIO_EXT
+    )
+
+
+# ============================================================
+# AUDIO EXTRACTION
+# ============================================================
 
 def extract_audio(video_path: str) -> str:
     """
-    Extract a temporary 16 kHz mono WAV from a video.
+    Extract a temporary WAV audio track from a video.
 
-    The temporary directory can be deleted immediately
-    after Gemini finishes transcription.
+    The generated audio is stored in a temporary directory.
+
+    The temporary file should be deleted after transcription.
     """
 
     if not os.path.exists(video_path):
+
         raise FileNotFoundError(
             f"Video file not found: {video_path}"
         )
@@ -62,10 +83,12 @@ def extract_audio(video_path: str) -> str:
 
     output_path = os.path.join(
         temp_dir,
-        f"{Path(video_path).stem}_audio.wav"
+        f"{Path(video_path).stem}_audio.wav",
     )
 
-    ffmpeg_path = imageio_ffmpeg.get_ffmpeg_exe()
+    ffmpeg_path = (
+        imageio_ffmpeg.get_ffmpeg_exe()
+    )
 
     command = [
         ffmpeg_path,
@@ -77,27 +100,31 @@ def extract_audio(video_path: str) -> str:
         "1",
         "-ar",
         "16000",
-        output_path
+        "-c:a",
+        "pcm_s16le",
+        output_path,
     ]
 
     try:
+
         subprocess.run(
             command,
             check=True,
             stdout=subprocess.PIPE,
-            stderr=subprocess.PIPE
+            stderr=subprocess.PIPE,
         )
 
     except subprocess.CalledProcessError as exc:
+
         shutil.rmtree(
             temp_dir,
-            ignore_errors=True
+            ignore_errors=True,
         )
 
         error_message = (
             exc.stderr.decode(
                 "utf-8",
-                errors="ignore"
+                errors="ignore",
             )
             if exc.stderr
             else "FFmpeg audio extraction failed."
@@ -110,47 +137,79 @@ def extract_audio(video_path: str) -> str:
     return output_path
 
 
-def cleanup_temp_audio(audio_path: str | None):
+# ============================================================
+# TEMPORARY AUDIO CLEANUP
+# ============================================================
+
+def cleanup_temp_audio(
+    audio_path: str | None,
+):
     """
-    Delete the temporary audio file and its temporary directory.
+    Delete a temporary audio file and its
+    temporary directory.
+
+    Only directories created by extract_audio()
+    with the expected prefix are removed recursively.
     """
 
     if not audio_path:
         return
 
     try:
-        temp_dir = os.path.dirname(audio_path)
 
-        if (
-            temp_dir
-            and os.path.basename(temp_dir).startswith(
-                "ai_smart_notes_audio_"
-            )
+        temp_dir = os.path.dirname(
+            audio_path
+        )
+
+        directory_name = (
+            os.path.basename(temp_dir)
+        )
+
+        if directory_name.startswith(
+            "ai_smart_notes_audio_"
         ):
+
             shutil.rmtree(
                 temp_dir,
-                ignore_errors=True
+                ignore_errors=True,
             )
-        elif os.path.exists(audio_path):
-            os.remove(audio_path)
+
+        elif os.path.exists(
+            audio_path
+        ):
+
+            os.remove(
+                audio_path
+            )
 
     except Exception:
+        # Cleanup should never crash the request.
         pass
 
 
-def get_video_info(video_path: str):
+# ============================================================
+# VIDEO INFORMATION
+# ============================================================
+
+def get_video_info(
+    video_path: str,
+):
     """
     Get basic video information.
     """
 
     if not os.path.exists(video_path):
+
         raise FileNotFoundError(
             f"Video file not found: {video_path}"
         )
 
-    cap = cv2.VideoCapture(video_path)
+    cap = cv2.VideoCapture(
+        video_path
+    )
 
     if not cap.isOpened():
+
         raise RuntimeError(
             "Unable to open video."
         )
@@ -188,44 +247,69 @@ def get_video_info(video_path: str):
         "frame_count": frame_count,
         "width": width,
         "height": height,
-        "duration": duration
+        "duration": duration,
     }
 
+
+# ============================================================
+# FRAME EXTRACTION
+# ============================================================
 
 def extract_frames(
     video_path: str,
     output_dir: str | None = None,
     every_seconds: int = 45,
-    max_frames: int = 8
+    max_frames: int = 8,
 ):
     """
-    Extract a limited number of video frames.
+    Extract video frames at fixed intervals.
 
-    Default:
-        one frame every 45 seconds
-        maximum 8 frames
+    Default configuration:
 
-    This is deliberately throttled for Render's limited resources.
+        Every 45 seconds
+        Maximum 8 frames
+
+    The API layer can process only the first 6 frames
+    when required by the frontend workflow.
     """
 
     if not os.path.exists(video_path):
+
         raise FileNotFoundError(
             f"Video file not found: {video_path}"
         )
 
+    if every_seconds <= 0:
+
+        raise ValueError(
+            "every_seconds must be greater than 0."
+        )
+
+    if max_frames <= 0:
+
+        raise ValueError(
+            "max_frames must be greater than 0."
+        )
+
     if output_dir is None:
+
         output_dir = tempfile.mkdtemp(
             prefix="ai_smart_notes_frames_"
         )
+
     else:
+
         os.makedirs(
             output_dir,
-            exist_ok=True
+            exist_ok=True,
         )
 
-    cap = cv2.VideoCapture(video_path)
+    cap = cv2.VideoCapture(
+        video_path
+    )
 
     if not cap.isOpened():
+
         raise RuntimeError(
             "Unable to open video for frame extraction."
         )
@@ -241,6 +325,7 @@ def extract_frames(
     )
 
     if not fps or fps <= 0:
+
         fps = 25.0
 
     duration = (
@@ -249,7 +334,9 @@ def extract_frames(
         else 0
     )
 
-    frames = []
+    # ========================================================
+    # BUILD TIMESTAMPS
+    # ========================================================
 
     timestamps = []
 
@@ -259,17 +346,26 @@ def extract_frames(
         current_time <= duration
         and len(timestamps) < max_frames
     ):
+
         timestamps.append(
             current_time
         )
 
         current_time += every_seconds
 
-    for index, timestamp in enumerate(timestamps):
+    frames = []
+
+    # ========================================================
+    # EXTRACT FRAMES
+    # ========================================================
+
+    for index, timestamp in enumerate(
+        timestamps
+    ):
 
         cap.set(
             cv2.CAP_PROP_POS_MSEC,
-            timestamp * 1000
+            timestamp * 1000,
         )
 
         success, frame = cap.read()
@@ -277,28 +373,44 @@ def extract_frames(
         if not success:
             continue
 
-        # Resize large frames to reduce disk usage.
-        height, width = frame.shape[:2]
+        # ====================================================
+        # RESIZE LARGE FRAME
+        # ====================================================
+
+        height, width = (
+            frame.shape[:2]
+        )
 
         max_width = 1280
 
         if width > max_width:
-            scale = max_width / width
+
+            scale = (
+                max_width / width
+            )
 
             new_width = max_width
+
             new_height = int(
                 height * scale
             )
 
             frame = cv2.resize(
                 frame,
-                (new_width, new_height),
-                interpolation=cv2.INTER_AREA
+                (
+                    new_width,
+                    new_height,
+                ),
+                interpolation=cv2.INTER_AREA,
             )
+
+        # ====================================================
+        # SAVE JPEG
+        # ====================================================
 
         frame_path = os.path.join(
             output_dir,
-            f"frame_{index + 1:02d}_{int(timestamp)}s.jpg"
+            f"frame_{index + 1:02d}_{int(timestamp)}s.jpg",
         )
 
         success = cv2.imwrite(
@@ -306,8 +418,8 @@ def extract_frames(
             frame,
             [
                 cv2.IMWRITE_JPEG_QUALITY,
-                75
-            ]
+                75,
+            ],
         )
 
         if not success:
@@ -318,12 +430,13 @@ def extract_frames(
                 "index": index + 1,
                 "timestamp": round(
                     timestamp,
-                    2
+                    2,
                 ),
                 "path": frame_path,
                 "filename": os.path.basename(
                     frame_path
-                )
+                ),
+                "difference": 0.0,
             }
         )
 
@@ -332,9 +445,18 @@ def extract_frames(
     return frames
 
 
-def cleanup_frames(frames):
+# ============================================================
+# FRAME CLEANUP
+# ============================================================
+
+def cleanup_frames(
+    frames,
+):
     """
-    Delete extracted frame files and temporary directories.
+    Delete extracted frame files.
+
+    This is available for workflows that do not need
+    the frames to remain available to the frontend.
     """
 
     if not frames:
@@ -344,14 +466,20 @@ def cleanup_frames(frames):
 
     for frame in frames:
 
-        path = frame.get("path")
+        path = frame.get(
+            "path"
+        )
 
         if not path:
             continue
 
         try:
+
             if os.path.exists(path):
-                os.remove(path)
+
+                os.remove(
+                    path
+                )
 
             directories.add(
                 os.path.dirname(path)
@@ -360,10 +488,19 @@ def cleanup_frames(frames):
         except Exception:
             pass
 
+    # Remove empty directories only.
     for directory in directories:
+
         try:
-            if os.path.isdir(directory):
-                if not os.listdir(directory):
-                    os.rmdir(directory)
+
+            if (
+                os.path.isdir(directory)
+                and not os.listdir(directory)
+            ):
+
+                os.rmdir(
+                    directory
+                )
+
         except Exception:
             pass
