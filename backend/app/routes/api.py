@@ -53,7 +53,7 @@ router = APIRouter(prefix="/api")
 # ============================================================================
 
 class GenerateNotesRequest(BaseModel):
-    media_id: int
+    media_id: Optional[int] = None
     note_type: str = "summary"
     note_language: str = "en"
     transcript: Optional[str] = None
@@ -94,6 +94,7 @@ async def upload_media(
     media_type = "video" if is_video(destination) else "audio"
     orig_name = file.filename or unique_filename
 
+    # Construct Media instance matching existing database model attributes
     media = Media()
     if hasattr(media, "file_path"):
         media.file_path = destination
@@ -235,16 +236,17 @@ def api_generate_notes(
     req: GenerateNotesRequest,
     db: Session = Depends(get_db),
 ):
-    # 1. Try to find media by requested ID, or fall back to the most recent media record
+    # 1. Resolve media record (by ID or fallback to latest record)
     media = None
     if req.media_id:
         media = db.query(Media).filter(Media.id == req.media_id).first()
-
     if not media:
         media = db.query(Media).order_by(Media.id.desc()).first()
 
-    # 2. Extract transcript from frontend or DB record
-    transcript_text = (req.transcript or "").strip() or (media.transcript if media else "").strip()
+    # 2. Extract transcript from frontend request first, then fallback to database
+    transcript_text = (req.transcript or "").strip()
+    if not transcript_text and media:
+        transcript_text = (media.transcript or "").strip()
 
     if not transcript_text:
         raise HTTPException(
@@ -252,7 +254,7 @@ def api_generate_notes(
             detail="Valid transcript is required before generating notes.",
         )
 
-    # 3. If no media record exists at all in the database, create one on the fly
+    # 3. Ensure a Media record exists and save the transcript text
     if not media:
         media = Media()
         if hasattr(media, "original_name"):
@@ -271,7 +273,6 @@ def api_generate_notes(
         db.commit()
         db.refresh(media)
     else:
-        # Update existing record with the latest transcript text
         if hasattr(media, "transcript") and media.transcript != transcript_text:
             media.transcript = transcript_text
             db.commit()
@@ -287,55 +288,6 @@ def api_generate_notes(
         except TypeError:
             content, labels = generate_notes(
                 transcript=transcript_text,
-                note_type=req.note_type,
-            )
-    except Exception as e:
-        raise HTTPException(status_code=500, detail=f"AI note generation failed: {str(e)}")
-
-    note = Note(
-        media_id=media.id,
-        title=content.get("title") or f"{req.note_type.title()} Notes",
-        note_type=req.note_type,
-        note_language=req.note_language,
-        content_json=json.dumps(content),
-        note_labels_json=json.dumps(labels),
-    )
-    db.add(note)
-    db.commit()
-    db.refresh(note)
-
-    return {
-        "id": note.id,
-        "title": note.title,
-        "note_type": note.note_type,
-        "note_language": note.note_language,
-        "content": content,
-        "labels": labels,
-    }
-    # Prioritize the transcript from the frontend textarea, fallback to DB
-    transcript_text = (req.transcript or "").strip() or (media.transcript or "").strip()
-    if not transcript_text:
-        raise HTTPException(
-            status_code=400,
-            detail="Valid transcript is required before generating notes.",
-        )
-
-    # Ensure DB record holds the latest transcript
-    if not media.transcript or media.transcript != transcript_text:
-        media.transcript = transcript_text
-        db.commit()
-
-    try:
-        # Pass language using either 'language' or positional to match ai.py
-        try:
-            content, labels = generate_notes(
-                transcript=media.transcript,
-                note_type=req.note_type,
-                language=req.note_language,
-            )
-        except TypeError:
-            content, labels = generate_notes(
-                transcript=media.transcript,
                 note_type=req.note_type,
             )
     except Exception as e:
