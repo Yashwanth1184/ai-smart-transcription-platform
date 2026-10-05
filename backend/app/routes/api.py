@@ -3,7 +3,6 @@ import uuid
 import json
 from pathlib import Path
 from typing import Dict, List, Optional
-
 from fastapi import (
     APIRouter,
     Depends,
@@ -13,15 +12,12 @@ from fastapi import (
     WebSocket,
     WebSocketDisconnect,
 )
-
 from fastapi.responses import FileResponse, Response
 from pydantic import BaseModel
 from sqlalchemy.orm import Session
-
 from app.config import settings
 from app.db.database import get_db
 from app.models.models import Media, Note, Task, Reminder
-
 from app.services.ai import (
     generate_notes,
     chat_with_note,
@@ -29,83 +25,56 @@ from app.services.ai import (
     analyze_frame,
     translate_notes,
 )
-
 from app.services import exporter
-
 from app.services.media import (
     extract_audio,
     extract_frames,
     is_video,
     cleanup_temp_audio,
 )
-
 from app.services.transcription import transcribe
-
-
 # ============================================================
 # GOOGLE CALENDAR
 # ============================================================
-
 try:
     from app.services import calendar_service
-
     if hasattr(calendar_service, "get_calendar_auth_url"):
         get_calendar_auth_url = (
             calendar_service.get_calendar_auth_url
         )
-
     elif hasattr(calendar_service, "get_auth_url"):
         get_calendar_auth_url = (
             calendar_service.get_auth_url
         )
-
     else:
-
         def get_calendar_auth_url():
             return None
-
 except Exception:
-
     def get_calendar_auth_url():
         return None
-
-
 # ============================================================
 # ROUTER
 # ============================================================
-
 router = APIRouter(prefix="/api")
-
-
 # ============================================================
 # REQUEST MODELS
 # ============================================================
-
 class GenerateNotesRequest(BaseModel):
     media_id: int
     note_type: str = "summary"
     note_language: str = "en"
-
-
 class TranslateNoteRequest(BaseModel):
     target_language: str
-
-
 class ChatRequest(BaseModel):
     note_id: int
     question: str
-
-
 class CreateReminderRequest(BaseModel):
     task_id: int
     remind_at: str
     add_to_calendar: bool = False
-
-
 # ============================================================
 # UPLOAD
 # ============================================================
-
 @router.post("/upload")
 async def upload_media(
     file: UploadFile = File(...),
@@ -113,68 +82,53 @@ async def upload_media(
 ):
     """
     Upload an audio or video file.
-
     The original uploaded file is stored locally because it is
     still required for video frame extraction and other features.
     """
-
     try:
         ext = Path(
             file.filename or ""
         ).suffix.lower()
-
         unique_filename = (
             f"{uuid.uuid4().hex}{ext}"
         )
-
         os.makedirs(
             settings.upload_dir,
             exist_ok=True
         )
-
         destination = os.path.join(
             settings.upload_dir,
             unique_filename
         )
-
         with open(
             destination,
             "wb"
         ) as f:
-
             while True:
-
                 chunk = await file.read(
                     1024 * 1024
                 )
-
                 if not chunk:
                     break
-
                 f.write(chunk)
-
         media_type = (
             "video"
             if is_video(destination)
             else "audio"
         )
-
         orig_name = (
             file.filename
             or unique_filename
         )
-
         media = Media(
             file_path=destination,
             media_type=media_type,
             original_name=orig_name,
             status="uploaded",
         )
-
         db.add(media)
         db.commit()
         db.refresh(media)
-
         return {
             "id": media.id,
             "filename": orig_name,
@@ -185,19 +139,14 @@ async def upload_media(
                 else None
             ),
         }
-
     except Exception as e:
-
         raise HTTPException(
             status_code=500,
             detail=f"Upload failed: {str(e)}"
         )
-
-
 # ============================================================
 # TRANSCRIPTION
 # ============================================================
-
 @router.post("/transcribe/{media_id}")
 def transcribe_media(
     media_id: int,
@@ -206,7 +155,6 @@ def transcribe_media(
 ):
     """
     Transcribe audio/video using Gemini File API.
-
     For videos:
         Video
           ↓
@@ -217,43 +165,32 @@ def transcribe_media(
         Transcript
           ↓
         Temporary WAV deleted
-
     Faster-Whisper is no longer used.
     """
-
     media = (
         db.query(Media)
         .filter(Media.id == media_id)
         .first()
     )
-
     if not media:
         raise HTTPException(
             status_code=404,
             detail="Media not found."
         )
-
     audio_path = media.file_path
     temporary_audio = False
-
     try:
-
         # ----------------------------------------------------
         # VIDEO → TEMPORARY AUDIO
         # ----------------------------------------------------
-
         if media.media_type == "video":
-
             audio_path = extract_audio(
                 media.file_path
             )
-
             temporary_audio = True
-
         # ----------------------------------------------------
         # LANGUAGE
         # ----------------------------------------------------
-
         lang_arg = (
             None
             if language in (
@@ -263,45 +200,34 @@ def transcribe_media(
             )
             else language
         )
-
         # ----------------------------------------------------
         # GEMINI TRANSCRIPTION
         # ----------------------------------------------------
-
         result = transcribe(
             audio_path,
             language=lang_arg
         )
-
         transcript_text = (
             result.get("text", "")
             or ""
         ).strip()
-
         if not transcript_text:
-
             raise RuntimeError(
                 "Gemini returned an empty transcript."
             )
-
         # ----------------------------------------------------
         # SAVE TRANSCRIPT
         # ----------------------------------------------------
-
         media.transcript = transcript_text
-
         media.language = (
             result.get(
                 "language",
                 lang_arg or "auto"
             )
         )
-
         media.status = "transcribed"
-
         db.commit()
         db.refresh(media)
-
         return {
             "media_id": media.id,
             "text": media.transcript,
@@ -311,22 +237,16 @@ def transcribe_media(
                 []
             ),
         }
-
     except HTTPException:
         raise
-
     except Exception as e:
-
         db.rollback()
-
         error_text = str(e)
-
         if (
             "503" in error_text
             or "UNAVAILABLE" in error_text
             or "high demand" in error_text.lower()
         ):
-
             raise HTTPException(
                 status_code=503,
                 detail=(
@@ -334,33 +254,24 @@ def transcribe_media(
                     "Please try transcription again."
                 )
             )
-
         raise HTTPException(
             status_code=500,
             detail=f"Transcription failed: {error_text}"
         )
-
     finally:
-
         # ----------------------------------------------------
         # DELETE TEMPORARY WAV
         # ----------------------------------------------------
-
         if temporary_audio and audio_path:
-
             try:
                 cleanup_temp_audio(
                     audio_path
                 )
-
             except Exception:
                 pass
-
-
 # ============================================================
 # VIDEO FRAME EXTRACTION
 # ============================================================
-
 @router.post("/media/extract-frames/{media_id}")
 def extract_media_frames(
     media_id: int,
@@ -368,105 +279,80 @@ def extract_media_frames(
 ):
     """
     Extract video frames.
-
     Configuration:
         Every 45 seconds
         Maximum 8 frames
         Process only first 6 frames
-
     Frames are retained because the frontend displays them.
     """
-
     media = (
         db.query(Media)
         .filter(Media.id == media_id)
         .first()
     )
-
     if not media:
         raise HTTPException(
             status_code=404,
             detail="Media not found."
         )
-
     if media.media_type != "video":
-
         raise HTTPException(
             status_code=400,
             detail="Media is not a video file."
         )
-
     out_dir = os.path.join(
         settings.output_dir,
         f"frames_{media.id}"
     )
-
     os.makedirs(
         out_dir,
         exist_ok=True
     )
-
     try:
-
         # ----------------------------------------------------
         # EXTRACT
         # ----------------------------------------------------
-
         raw_frames = extract_frames(
             media.file_path,
             output_dir=out_dir,
             every_seconds=45,
             max_frames=8,
         )
-
     except Exception as e:
-
         raise HTTPException(
             status_code=500,
             detail=(
                 f"Frame extraction failed: {str(e)}"
             )
         )
-
     # --------------------------------------------------------
     # PROCESS ONLY FIRST 6
     # --------------------------------------------------------
-
     results = []
-
     for item in raw_frames[:6]:
-
         frame_path = item.get(
             "path"
         )
-
         if not frame_path:
             continue
-
         rel_url = (
             f"/storage/outputs/"
             f"frames_{media.id}/"
             f"{os.path.basename(frame_path)}"
         )
-
         timestamp = item.get(
             "timestamp",
             0.0
         )
-
         # ----------------------------------------------------
         # GEMINI VISUAL ANALYSIS
         # ----------------------------------------------------
-
         try:
-
             analysis = analyze_frame(
                 frame_path,
                 timestamp=timestamp
             )
-
         except Exception:
-
             analysis = {
                 "type": "visual",
                 "title": (
@@ -480,7 +366,6 @@ def extract_media_frames(
                 "extracted_text": "",
                 "code": "",
             }
-
         results.append(
             {
                 "filename": os.path.basename(
@@ -495,17 +380,13 @@ def extract_media_frames(
                 "analysis": analysis,
             }
         )
-
     return {
         "media_id": media.id,
         "frames": results,
     }
-
-
 # ============================================================
 # GENERATE NOTES
 # ============================================================
-
 @router.post("/generate-notes")
 def api_generate_notes(
     req: GenerateNotesRequest,
@@ -516,9 +397,7 @@ def api_generate_notes(
         .filter(Media.id == req.media_id)
         .first()
     )
-
     if not media or not media.transcript:
-
         raise HTTPException(
             status_code=400,
             detail=(
@@ -526,36 +405,27 @@ def api_generate_notes(
                 "before generating notes."
             )
         )
-
     try:
-
         try:
-
             content, labels = generate_notes(
                 transcript=media.transcript,
                 note_type=req.note_type,
                 language=req.note_language,
             )
-
         except TypeError:
-
             # Backward compatibility with older
             # generate_notes() implementation.
-
             content, labels = generate_notes(
                 transcript=media.transcript,
                 note_type=req.note_type,
             )
-
     except Exception as e:
-
         raise HTTPException(
             status_code=500,
             detail=(
                 f"AI note generation failed: {str(e)}"
             )
         )
-
     note = Note(
         media_id=media.id,
         title=(
@@ -573,11 +443,9 @@ def api_generate_notes(
             ensure_ascii=False
         ),
     )
-
     db.add(note)
     db.commit()
     db.refresh(note)
-
     return {
         "id": note.id,
         "title": note.title,
@@ -586,12 +454,9 @@ def api_generate_notes(
         "content": content,
         "labels": labels,
     }
-
-
 # ============================================================
 # TRANSLATE NOTE
 # ============================================================
-
 @router.post("/notes/{note_id}/translate")
 def api_translate_note(
     note_id: int,
@@ -603,20 +468,15 @@ def api_translate_note(
         .filter(Note.id == note_id)
         .first()
     )
-
     if not note:
-
         raise HTTPException(
             status_code=404,
             detail="Note not found."
         )
-
     current_content = json.loads(
         note.content_json or "{}"
     )
-
     try:
-
         translated_content, labels = (
             translate_notes(
                 content=current_content,
@@ -624,30 +484,23 @@ def api_translate_note(
                 note_type=note.note_type,
             )
         )
-
     except Exception as e:
-
         raise HTTPException(
             status_code=500,
             detail=f"Translation failed: {str(e)}"
         )
-
     note.content_json = json.dumps(
         translated_content,
         ensure_ascii=False
     )
-
     note.note_language = (
         req.target_language
     )
-
     note.note_labels_json = json.dumps(
         labels,
         ensure_ascii=False
     )
-
     db.commit()
-
     return {
         "id": note.id,
         "title": note.title,
@@ -656,41 +509,32 @@ def api_translate_note(
         "content": translated_content,
         "labels": labels,
     }
-
-
 # ============================================================
 # LIST NOTES
 # ============================================================
-
 @router.get("/notes")
 def list_notes(
     db: Session = Depends(get_db)
 ):
-
     notes = (
         db.query(Note)
         .order_by(Note.created_at.desc())
         .all()
     )
-
     out = []
-
     for n in notes:
-
         try:
             content = json.loads(
                 n.content_json or "{}"
             )
         except Exception:
             content = {}
-
         try:
             labels = json.loads(
                 n.note_labels_json or "{}"
             )
         except Exception:
             labels = {}
-
         out.append(
             {
                 "id": n.id,
@@ -706,98 +550,72 @@ def list_notes(
                 ),
             }
         )
-
     return out
-
-
 # ============================================================
 # CHAT WITH NOTE
 # ============================================================
-
 @router.post("/chat")
 def api_chat(
     req: ChatRequest,
     db: Session = Depends(get_db),
 ):
-
     note = (
         db.query(Note)
         .filter(Note.id == req.note_id)
         .first()
     )
-
     if not note:
-
         raise HTTPException(
             status_code=404,
             detail="Note not found."
         )
-
     note_data = json.loads(
         note.content_json or "{}"
     )
-
     try:
-
         answer = chat_with_note(
             note_data,
             req.question
         )
-
     except Exception as e:
-
         raise HTTPException(
             status_code=500,
             detail=f"Chat failed: {str(e)}"
         )
-
     return {
         "answer": answer
     }
-
-
 # ============================================================
 # EXTRACT TASKS
 # ============================================================
-
 @router.post("/tasks/extract/{media_id}")
 def api_extract_tasks(
     media_id: int,
     db: Session = Depends(get_db),
 ):
-
     media = (
         db.query(Media)
         .filter(Media.id == media_id)
         .first()
     )
-
     if not media or not media.transcript:
-
         raise HTTPException(
             status_code=400,
             detail="Transcript is required."
         )
-
     try:
-
         items = extract_tasks(
             media.transcript
         )
-
     except Exception as e:
-
         raise HTTPException(
             status_code=500,
             detail=(
                 f"Task extraction failed: {str(e)}"
             )
         )
-
     created = []
-
     for it in items:
-
         t = Task(
             media_id=media.id,
             title=it.get(
@@ -819,32 +637,24 @@ def api_extract_tasks(
                 "assigned_to"
             ),
         )
-
         db.add(t)
         created.append(t)
-
     db.commit()
-
     return {
         "count": len(created)
     }
-
-
 # ============================================================
 # LIST TASKS
 # ============================================================
-
 @router.get("/tasks")
 def list_tasks(
     db: Session = Depends(get_db)
 ):
-
     tasks = (
         db.query(Task)
         .order_by(Task.id.desc())
         .all()
     )
-
     return [
         {
             "id": t.id,
@@ -857,288 +667,225 @@ def list_tasks(
         }
         for t in tasks
     ]
-
-
 # ============================================================
 # CREATE REMINDER
 # ============================================================
-
 @router.post("/reminders")
 def create_reminder(
     req: CreateReminderRequest,
     db: Session = Depends(get_db),
 ):
-
     task = (
         db.query(Task)
         .filter(Task.id == req.task_id)
         .first()
     )
-
     if not task:
-
         raise HTTPException(
             status_code=404,
             detail="Task not found."
         )
-
     r = Reminder(
         task_id=task.id,
         remind_at=req.remind_at,
         add_to_calendar=req.add_to_calendar,
     )
-
     db.add(r)
     db.commit()
     db.refresh(r)
-
     return {
         "id": r.id,
         "status": "scheduled"
     }
-
-
 # ============================================================
 # GOOGLE CALENDAR AUTH
 # ============================================================
-
 @router.get("/calendar/auth")
 def calendar_auth():
-
     url = None
-
     try:
-
         url = get_calendar_auth_url()
-
     except Exception:
         pass
-
     if not url:
-
         return {
             "authorization_url":
-                "https://accounts.google.com/"
+                "https\://accounts.google.com/"
                 "o/oauth2/v2/auth"
         }
-
     return {
         "authorization_url": url
     }
-
-
+# ============================================================
 # ============================================================
 # EXPORT NOTE
 # ============================================================
-
 @router.get("/export/{note_id}/{format}")
 def api_export_note(
     note_id: int,
     format: str,
     db: Session = Depends(get_db),
 ):
-
-    note = (
-        db.query(Note)
-        .filter(Note.id == note_id)
-        .first()
-    )
-
+    note = db.query(Note).filter(Note.id == note_id).first()
     if not note:
-
-        raise HTTPException(
-            status_code=404,
-            detail="Note not found."
-        )
-
-    fmt = (
-        format
-        .lower()
-        .strip()
-    )
-
-    if fmt not in (
-        "pdf",
-        "docx",
-        "txt",
-        "json"
-    ):
-
-        raise HTTPException(
-            status_code=400,
-            detail="Unsupported export format."
-        )
-
+        raise HTTPException(status_code=404, detail="Note not found.")
+    fmt = format.lower().strip()
+    if fmt not in ("pdf", "docx", "txt", "json"):
+        raise HTTPException(status_code=400, detail="Unsupported export format.")
     try:
-
-        res = None
-
-        exporter_function_name = (
-            f"export_{fmt}"
-        )
-
-        if hasattr(
-            exporter,
-            exporter_function_name
-        ):
-
-            fn = getattr(
-                exporter,
-                exporter_function_name
-            )
-
-            try:
-
-                res = fn(
-                    note,
-                    settings.output_dir
-                )
-
-            except TypeError:
-
-                res = fn(note)
-
-        elif hasattr(
-            exporter,
-            "export_note"
-        ):
-
-            res = exporter.export_note(
-                note,
-                fmt,
-                output_dir=settings.output_dir
-            )
-
-        elif fmt == "json":
-
-            filename = (
-                f"note_{note.id}.json"
-            )
-
-            filepath = os.path.join(
-                settings.output_dir,
-                filename
-            )
-
-            os.makedirs(
-                settings.output_dir,
-                exist_ok=True
-            )
-
-            with open(
-                filepath,
-                "w",
-                encoding="utf-8"
-            ) as f:
-
-                f.write(
-                    note.content_json
-                    or "{}"
-                )
-
+        os.makedirs(settings.output_dir, exist_ok=True)
+        filename = f"note_{note.id}.{fmt}"
+        filepath = os.path.join(settings.output_dir, filename)
+        try:
+            content = json.loads(note.content_json or "{}")
+        except Exception:
+            content = {"content": note.content_json or ""}
+        if fmt == "json":
+            with open(filepath, "w", encoding="utf-8") as f:
+                json.dump(content, f, ensure_ascii=False, indent=2)
+            return FileResponse(filepath, media_type="application/json", filename=filename)
+        if fmt == "txt":
+            def value_to_text(value):
+                if isinstance(value, dict):
+                    parts = []
+                    for key, val in value.items():
+                        title = str(key).replace("_", " ").title()
+                        if isinstance(val, (dict, list)):
+                            parts.append(f"\n{title}\n")
+                            parts.append(value_to_text(val))
+                        else:
+                            parts.append(f"{title}: {val}\n")
+                    return "".join(parts)
+                if isinstance(value, list):
+                    parts = []
+                    for item in value:
+                        if isinstance(item, (dict, list)):
+                            parts.append(value_to_text(item))
+                        else:
+                            parts.append(f"• {item}\n")
+                    return "".join(parts)
+                return str(value)
+            title = note.title or "Notes"
+            with open(filepath, "w", encoding="utf-8") as f:
+                f.write(title + "\n")
+                f.write("=" * len(title) + "\n\n")
+                f.write(value_to_text(content))
+            return FileResponse(filepath, media_type="text/plain", filename=filename)
+        if fmt == "docx":
+            from docx import Document
+            document = Document()
+            document.add_heading(note.title or "Notes", level=1)
+            def add_docx_content(value, level=0):
+                if isinstance(value, dict):
+                    for key, val in value.items():
+                        heading = str(key).replace("_", " ").title()
+                        if isinstance(val, (dict, list)):
+                            document.add_heading(heading, level=min(level + 2, 4))
+                            add_docx_content(val, level + 1)
+                        else:
+                            paragraph = document.add_paragraph()
+                            run = paragraph.add_run(f"{heading}: ")
+                            run.bold = True
+                            paragraph.add_run(str(val))
+                elif isinstance(value, list):
+                    for item in value:
+                        if isinstance(item, (dict, list)):
+                            add_docx_content(item, level)
+                        else:
+                            document.add_paragraph(str(item), style="List Bullet")
+                else:
+                    document.add_paragraph(str(value))
+            add_docx_content(content)
+            document.save(filepath)
             return FileResponse(
                 filepath,
-                media_type="application/json",
+                media_type="application/vnd.openxmlformats-officedocument.wordprocessingml.document",
                 filename=filename
             )
-
-        else:
-
-            raise HTTPException(
-                status_code=400,
-                detail=(
-                    f"No exporter found for {fmt}"
-                )
+        if fmt == "pdf":
+            from reportlab.lib.pagesizes import A4
+            from reportlab.lib.styles import getSampleStyleSheet
+            from reportlab.lib.enums import TA_CENTER
+            from reportlab.platypus import SimpleDocTemplate, Paragraph, Spacer, ListFlowable, ListItem
+            from reportlab.lib.units import mm
+            from xml.sax.saxutils import escape
+            pdf = SimpleDocTemplate(
+                filepath, pagesize=A4, rightMargin=18 * mm, leftMargin=18 * mm,
+                topMargin=18 * mm, bottomMargin=18 * mm
             )
-
-        if isinstance(
-            res,
-            (FileResponse, Response)
-        ):
-
-            return res
-
-        elif (
-            isinstance(
-                res,
-                (str, Path)
-            )
-            and os.path.exists(
-                str(res)
-            )
-        ):
-
-            return FileResponse(
-                str(res),
-                filename=os.path.basename(
-                    str(res)
-                )
-            )
-
-        return res
-
+            styles = getSampleStyleSheet()
+            title_style = styles["Title"]
+            title_style.alignment = TA_CENTER
+            heading_style = styles["Heading2"]
+            body_style = styles["BodyText"]
+            story = [Paragraph(escape(note.title or "Notes"), title_style), Spacer(1, 10)]
+            def add_pdf_content(value):
+                if isinstance(value, dict):
+                    for key, val in value.items():
+                        heading = str(key).replace("_", " ").title()
+                        if isinstance(val, (dict, list)):
+                            story.append(Paragraph(escape(heading), heading_style))
+                            story.append(Spacer(1, 4))
+                            add_pdf_content(val)
+                        else:
+                            story.append(Paragraph(f"<b>{escape(heading)}:</b> {escape(str(val))}", body_style))
+                            story.append(Spacer(1, 5))
+                elif isinstance(value, list):
+                    items = []
+                    for item in value:
+                        if isinstance(item, (dict, list)):
+                            add_pdf_content(item)
+                        else:
+                            items.append(ListItem(Paragraph(escape(str(item)), body_style)))
+                    if items:
+                        story.append(ListFlowable(items, bulletType="bullet", leftIndent=18))
+                        story.append(Spacer(1, 6))
+                else:
+                    story.append(Paragraph(escape(str(value)), body_style))
+            add_pdf_content(content)
+            pdf.build(story)
+            return FileResponse(filepath, media_type="application/pdf", filename=filename)
     except HTTPException:
         raise
-
     except Exception as e:
-
-        raise HTTPException(
-            status_code=500,
-            detail=f"Export failed: {str(e)}"
-        )
-
-
+        raise HTTPException(status_code=500, detail=f"Export failed: {str(e)}")
 # ============================================================
 # REAL-TIME COLLABORATION
 # ============================================================
-
+# ============================================================
 class CollaborationManager:
-
     def __init__(self):
-
         self.rooms: Dict[
             str,
             List[dict]
         ] = {}
-
     async def connect(
         self,
         room_id: str,
         websocket: WebSocket
     ):
-
         await websocket.accept()
-
         if room_id not in self.rooms:
-
             self.rooms[room_id] = []
-
     def disconnect(
         self,
         room_id: str,
         websocket: WebSocket
     ):
-
         if room_id in self.rooms:
-
             self.rooms[room_id] = [
                 client
                 for client in self.rooms[room_id]
                 if client["ws"] != websocket
             ]
-
             if not self.rooms[room_id]:
-
                 del self.rooms[room_id]
-
     async def broadcast_room_state(
         self,
         room_id: str
     ):
-
         if room_id not in self.rooms:
             return
-
         user_list = [
             {
                 "user_id": c.get(
@@ -1156,100 +903,69 @@ class CollaborationManager:
             }
             for c in self.rooms[room_id]
         ]
-
         payload = json.dumps(
             {
                 "type": "room_state",
                 "users": user_list
             }
         )
-
         for c in self.rooms[room_id]:
-
             try:
-
                 await c["ws"].send_text(
                     payload
                 )
-
             except Exception:
                 pass
-
     async def send_to_user(
         self,
         room_id: str,
         target_user_id: str,
         payload: dict
     ):
-
         if room_id not in self.rooms:
             return
-
         raw = json.dumps(payload)
-
         for c in self.rooms[room_id]:
-
             if c.get("user_id") == target_user_id:
-
                 try:
-
                     await c["ws"].send_text(
                         raw
                     )
-
                 except Exception:
                     pass
-
                 break
-
     async def broadcast(
         self,
         room_id: str,
         payload: dict
     ):
-
         if room_id not in self.rooms:
             return
-
         raw = json.dumps(payload)
-
         for c in self.rooms[room_id]:
-
             try:
-
                 await c["ws"].send_text(
                     raw
                 )
-
             except Exception:
                 pass
-
-
 manager = CollaborationManager()
-
-
 # ============================================================
 # CREATE COLLABORATION ROOM
 # ============================================================
-
 @router.post("/collaboration/rooms")
 def create_room():
-
     room_id = (
         uuid.uuid4()
         .hex[:6]
         .upper()
     )
-
     return {
         "room_id": room_id
     }
-
-
 # ============================================================
 # COLLABORATION WEBSOCKET
 # ============================================================
-
 @router.websocket(
     "/collaboration/{room_id}"
 )
@@ -1257,77 +973,60 @@ async def collaboration_ws(
     websocket: WebSocket,
     room_id: str
 ):
-
     normalized_room = (
         room_id
         .strip()
         .upper()
     )
-
     await manager.connect(
         normalized_room,
         websocket
     )
-
     client_entry = {
         "ws": websocket,
         "user_id": "",
         "user_name": "User",
         "voice_enabled": False,
     }
-
     manager.rooms[
         normalized_room
     ].append(
         client_entry
     )
-
     try:
-
         while True:
-
             text_data = (
                 await websocket.receive_text()
             )
-
             data = json.loads(
                 text_data
             )
-
             msg_type = data.get(
                 "type"
             )
-
             # ------------------------------------------------
             # JOIN
             # ------------------------------------------------
-
             if msg_type == "join":
-
                 client_entry[
                     "user_id"
                 ] = data.get(
                     "user_id",
                     ""
                 )
-
                 client_entry[
                     "user_name"
                 ] = data.get(
                     "user_name",
                     "User"
                 )
-
                 await manager.broadcast_room_state(
                     normalized_room
                 )
-
             # ------------------------------------------------
             # VOICE STATE
             # ------------------------------------------------
-
             elif msg_type == "voice_state":
-
                 client_entry[
                     "voice_enabled"
                 ] = bool(
@@ -1336,23 +1035,17 @@ async def collaboration_ws(
                         False
                     )
                 )
-
                 await manager.broadcast_room_state(
                     normalized_room
                 )
-
             # ------------------------------------------------
             # WEBRTC SIGNAL
             # ------------------------------------------------
-
             elif msg_type == "signal":
-
                 target = data.get(
                     "target"
                 )
-
                 if target:
-
                     await manager.send_to_user(
                         normalized_room,
                         target,
@@ -1366,13 +1059,10 @@ async def collaboration_ws(
                             ),
                         },
                     )
-
             # ------------------------------------------------
             # ROOM MESSAGE
             # ------------------------------------------------
-
             elif msg_type == "room_message":
-
                 await manager.broadcast(
                     normalized_room,
                     {
@@ -1386,25 +1076,19 @@ async def collaboration_ws(
                         ),
                     },
                 )
-
     except WebSocketDisconnect:
-
         manager.disconnect(
             normalized_room,
             websocket
         )
-
         await manager.broadcast_room_state(
             normalized_room
         )
-
     except Exception:
-
         manager.disconnect(
             normalized_room,
             websocket
         )
-
         await manager.broadcast_room_state(
             normalized_room
         )
