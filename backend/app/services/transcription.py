@@ -26,7 +26,7 @@ def transcribe(audio_path: str, language: str | None = None):
     if language and language != "auto":
         prompt += f" The speech language is {language}."
 
-    model_name = settings.gemini_model or "gemini-2.5-flash"
+    model_name = settings.gemini_model or "gemini-3.5-flash"
 
     try:
         response = client.models.generate_content(

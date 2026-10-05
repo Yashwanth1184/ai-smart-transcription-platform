@@ -34,7 +34,7 @@ Instructions:
 4. Return ONLY valid JSON with keys matching the schema. No markdown formatting or extra commentary.
 """
 
-    model_name = settings.gemini_model or "gemini-2.5-flash"
+    model_name = settings.gemini_model or "gemini-3.5-flash"
     config = types.GenerateContentConfig(
         response_mime_type="application/json",
         temperature=0.2,
@@ -74,7 +74,7 @@ Original JSON:
 Output ONLY valid JSON.
 """
 
-    model_name = settings.gemini_model or "gemini-2.5-flash"
+    model_name = settings.gemini_model or "gemini-3.5-flash"
     config = types.GenerateContentConfig(
         response_mime_type="application/json",
         temperature=0.1,
@@ -106,7 +106,7 @@ User Question:
 
 Answer the user's question directly, clearly, and concisely based strictly on the provided notes context.
 """
-    model_name = settings.gemini_model or "gemini-2.5-flash"
+    model_name = settings.gemini_model or "gemini-3.5-flash"
     response = client.models.generate_content(
         model=model_name,
         contents=prompt,
@@ -135,7 +135,7 @@ Return a JSON array of objects with the following schema:
 Return ONLY valid JSON. No markdown backticks.
 """
 
-    model_name = settings.gemini_model or "gemini-2.5-flash"
+    model_name = settings.gemini_model or "gemini-3.5-flash"
     config = types.GenerateContentConfig(
         response_mime_type="application/json",
         temperature=0.2,
@@ -176,7 +176,7 @@ Return a JSON object in this format:
 Return ONLY valid JSON.
 """
 
-    model_name = settings.gemini_model or "gemini-2.5-flash"
+    model_name = settings.gemini_model or "gemini-3.5-flash"
     config = types.GenerateContentConfig(
         response_mime_type="application/json",
         temperature=0.1,
